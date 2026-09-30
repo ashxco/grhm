@@ -1,0 +1,30 @@
+(app bounded
+  (auth users)
+
+  (uploads :max-kb 1024 :quota-mb 512 :user-quota-mb 25)
+
+  (db
+    (table items (id auto) (label string) (qty number)))
+
+  (api
+    (get "/api/items" :auth true (select items :limit 50 :order id))
+    (post "/api/items" :auth true
+      (input
+        (label string :min-len 1 :max-len 80)
+        (qty number :integer true :min 1 :max 100))
+      (insert items :label body.label :qty body.qty)))
+
+  (data
+    (resource items "/api/items" :default () :live true))
+
+  (page "/" home
+    (v :pad 24 :gap 12
+      (heading "Bounded inventory")
+      (txt "Sign in to manage inventory.")
+      (each item items.data (txt item.label " × " item.qty))
+      (btn "Add item"
+        (click
+          (send post "/api/items" :label "Item" :qty 1)
+          (refresh items)))
+      (btn "Sign out everywhere"
+        (click (send post "/api/auth/logout-all"))))))

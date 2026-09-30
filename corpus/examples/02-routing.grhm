@@ -1,0 +1,14 @@
+(app routing
+  (page "/" home
+    (v :pad 32 :gap 8
+      (heading "Home")
+      (link "Team" :to "/team")
+      (btn "First member"
+        (click
+          (nav (path "/team/{id}" :id 1))))))
+
+  (page "/team" team
+    (v :pad 32 (heading "Team")))
+
+  (page "/team/{id}" member
+    (v :pad 32 :gap 8 (heading "Member " id) (link "Back" :to "/team"))))

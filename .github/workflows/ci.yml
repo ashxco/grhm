@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  compiler:
+    strategy:
+      matrix:
+        node: ['22.22.2', '24.15.0']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # The published package has zero runtime dependencies; this guards that.
+      - run: npm audit --omit=dev
+      - run: npm audit --audit-level=high
+      - run: npm run check
+      - run: npm run build
+      - run: npm test
+      - run: npm run bench
+      - run: npm run test:load
+      - run: npm run evals
+      - run: npm run site:sync
+      - run: npm run site:check
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - run: npm run test:package
+
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Install example dependencies
+        working-directory: examples/store
+        run: npm ci
+      - name: Audit example dependencies
+        working-directory: examples/store
+        run: npm audit --audit-level=high
+      - name: Format check
+        working-directory: examples/store
+        run: npx grhm fmt --check
+      - name: Build example
+        working-directory: examples/store
+        run: npx grhm build
+      - name: Install Playwright browsers
+        working-directory: examples/store
+        run: npx playwright install --with-deps chromium
+      - name: Run generated tests (unit + browser)
+        working-directory: examples/store
+        run: npx grhm test
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:container

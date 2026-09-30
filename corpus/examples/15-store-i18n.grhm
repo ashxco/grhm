@@ -1,0 +1,58 @@
+(app boutique
+  (theme
+    (token surface "#ffffff")
+    (token ink "#18181b")
+    (dark (token surface "#18181b") (token ink "#fafafa")))
+
+  (i18n
+    (locale en
+      (msg title "Boutique")
+      (msg items-count "{n} items in stock"))
+    (locale fr
+      (msg title "Boutique")
+      (msg items-count "{n} articles en stock")))
+
+  (db
+    (table products
+      (id auto)
+      (name string)
+      (price number)
+      (stock number :indexed true))
+    (seed products
+      (row :name "Teapot" :price 24 :stock 12)
+      (row :name "Mug" :price 9 :stock 40)))
+
+  (api
+    (get "/api/products"
+      (select products
+        :where (> stock 0)
+        :order stock
+        :desc true
+        :limit 20))
+    (post "/api/products"
+      (input (name string) (price number))
+      (if
+        (> body.price 0)
+        (insert products
+          :name (trim body.name)
+          :price body.price
+          :stock 0)
+        (fail 400 "price must be positive"))))
+
+  (data
+    (resource products "/api/products" :default (arr) :poll 30))
+
+  (state locale "en")
+
+  (page "/" shop
+    :title (t title)
+    (v :pad 32 :gap 16 :max-w 640 :margin "0 auto"
+      (heading (t title))
+      (txt
+        (t items-count :n (count products.data)))
+      (when products.loading (skeleton :lines 4))
+      (each p products.data
+        (h :gap 8 :align center
+          (txt p.name :weight medium)
+          (txt (to-fixed 2 p.price))
+          (txt (fmt "{n} left" :n p.stock) :color "#52525b"))))))

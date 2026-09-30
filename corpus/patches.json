@@ -1,0 +1,35 @@
+{
+  "$comment": "Patch protocol transcripts (PRD FR-15). $REVISION stands for the value `grhm check` reports for the source. Explicit :id literals make targets stable and readable. Validated by tests/corpus.test.ts.",
+  "patches": [
+    {
+      "name": "set a property on a node",
+      "source": "(app a (page \"/\" home (grid :id \"product-grid\" :cols 4 :gap 16 (txt \"items\"))))",
+      "patch": "(patch :revision \"$REVISION\" :target product-grid (set cols 3))",
+      "expect": ":cols 3"
+    },
+    {
+      "name": "append a child",
+      "source": "(app a (page \"/\" home (v :id \"hero\" :pad 32 (heading \"Welcome\"))))",
+      "patch": "(patch :revision \"$REVISION\" :target hero (append (txt \"Sale ends Sunday\")))",
+      "expect": "(txt \"Sale ends Sunday\")"
+    },
+    {
+      "name": "replace a node",
+      "source": "(app a (page \"/\" home (v :pad 32 (txt :id \"greeting\" \"Hello\"))))",
+      "patch": "(patch :revision \"$REVISION\" :target greeting (replace (heading \"Hello there\")))",
+      "expect": "(heading \"Hello there\")"
+    },
+    {
+      "name": "insert before a node",
+      "source": "(app a (page \"/\" home (v :pad 32 (btn :id \"cta\" \"Buy\" (click (nav \"/\"))))))",
+      "patch": "(patch :revision \"$REVISION\" :target cta (insert-before (txt \"Limited stock\")))",
+      "expect": "(txt \"Limited stock\")"
+    },
+    {
+      "name": "multiple operations apply atomically",
+      "source": "(app a (state n 0) (page \"/\" home (v :id \"stack\" :pad 32 :gap 8 (txt \"Count: \" n))))",
+      "patch": "(patch :revision \"$REVISION\" :target stack (set gap 12) (append (btn \"Add\" (click (set n (+ n 1))))))",
+      "expect": "(btn \"Add\""
+    }
+  ]
+}

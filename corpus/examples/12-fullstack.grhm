@@ -1,0 +1,54 @@
+(app guestbook
+  (db
+    (table entries
+      (id auto)
+      (author string)
+      (message string)
+      (pinned boolean :default false)))
+
+  (api
+    (get "/api/entries"
+      (sort-by
+        (lambda (e) e.id)
+        (select entries)))
+    (post "/api/entries"
+      (insert entries
+        :author (trim body.author)
+        :message (trim body.message)))
+    (put "/api/entries/{id}"
+      (update entries :id id :pinned body.pinned))
+    (delete "/api/entries/{id}" (delete-row entries :id id)))
+
+  (data
+    (resource entries "/api/entries" :default (arr)))
+
+  (state author "")
+
+  (state message "")
+
+  (page "/" board
+    (v :pad 32 :gap 16 :max-w 640 :margin "0 auto"
+      (heading "Guestbook")
+      (h :gap 8 :align end
+        (input :value author :label "Name")
+        (input :value message :label "Message")
+        (btn "Sign" :variant primary
+          (click
+            (send post "/api/entries" :author author :message message)
+            (refresh entries)
+            (set message ""))))
+      (each e entries.data
+        (h :gap 8 :align center
+          (txt e.author :weight medium)
+          (txt e.message)
+          (when e.pinned (txt "pinned" :color "#b45309"))
+          (btn "Pin"
+            (click
+              (send put
+                (path "/api/entries/{id}" :id e.id)
+                :pinned true)
+              (refresh entries)))
+          (btn "Remove"
+            (click
+              (send delete (path "/api/entries/{id}" :id e.id))
+              (refresh entries))))))))

@@ -1,0 +1,54 @@
+(app board
+  (db
+    (table notes (id auto) (text string) (photo string :optional true))
+    (table votes
+      (id auto)
+      (note-id number :indexed true :references notes)))
+
+  (api
+    (get "/api/notes" (select notes :order id :desc true :limit 50))
+    (post "/api/notes"
+      (input (text string) (photo string :optional true))
+      (insert notes
+        :text (trim body.text)
+        :photo (or-else body.photo "")))
+    (post "/api/notes/{id}/votes"
+      (insert votes :note-id (to-num id))))
+
+  (uploads :max-kb 2048 :public true :quota-mb 512 :user-quota-mb 50)
+
+  (job prune-empty :every 86400
+    (count
+      (select notes :where (= text ""))))
+
+  (data
+    (resource notes "/api/notes" :default (arr) :live true))
+
+  (state draft "")
+
+  (state photo-url "")
+
+  (page "/" home :title "Live board"
+    (v :pad 32 :gap 16 :max-w 640 :margin "0 auto"
+      (heading "Live board")
+      (form
+        (submit
+          (send post "/api/notes" :text draft :photo photo-url)
+          (set draft "")
+          (set photo-url ""))
+        (input :value draft :label "Note" :required true)
+        (file-input :label "Photo" :to photo-url))
+      (when notes.loading (skeleton :lines 3))
+      (each n notes.data
+        (card :gap 8
+          (txt n.text)
+          (when (not-null n.photo) (img n.photo :alt "Note photo"))
+          (btn "Vote"
+            (click
+              (send post (path "/api/notes/{id}/votes" :id n.id)))))))))
+
+(tests
+  (test "board renders"
+    (visit "/")
+    (expect-text "Live board")
+    (screenshot "board")))

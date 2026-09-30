@@ -1,0 +1,26 @@
+(page "/" home
+  (v :pad 32 :gap 24 :max-w 960 :margin "0 auto" :enter fade-up :dur 300
+    (section :gap 8
+      (heading "New arrivals")
+      (txt "Fresh drops, updated daily." :color "#52525b")
+      (h :gap 8
+        (btn "Shop all" :variant primary
+          (click (nav "/products")))
+        (btn "Cart"
+          (click (set cart-open true)))
+        (btn "Wishlist"
+          (click (nav "/wishlist")))
+        (txt "In cart: " cart-count)))
+    (dialog :open cart-open :title "Your cart"
+      (txt "Items in cart: " cart-count)
+      (h :gap 8 :justify end
+        (btn "Close"
+          (click (set cart-open false)))
+        (btn "Checkout" :variant primary
+          (click (set cart-open false) (nav "/products")))))
+    (if products.loading
+      (txt "Loading...")
+      (grid :cols 4 :cols-sm 1 :gap 16 :enter fade :stagger 60
+        (each p products.data
+          (product-card :id p.id :name p.name :price p.price :image p.image
+            :on-view (nav (path "/products/{id}" :id p.id))))))))

@@ -1,0 +1,52 @@
+(app grades
+  (data
+    (resource scores "/api/scores.json" :default (arr)))
+
+  (fn average (xs)
+    (if
+      (= (count xs) 0)
+      0
+      (/ (sum xs) (count xs))))
+
+  (fn letter (score)
+    (if
+      (>= score 90)
+      "A"
+      (if
+        (>= score 80)
+        "B"
+        (if (>= score 70) "C" "F"))))
+
+  (fn passing (entries)
+    (filter
+      (lambda (e) (>= e.score 70))
+      entries))
+
+  (fn summary (entries)
+    (let
+      ((names
+         (map
+           (lambda (e) e.name)
+           (sort-by
+             (lambda (e) e.name)
+             entries))))
+      (join ", " names)))
+
+  (page "/" home
+    (v :pad 32 :gap 16
+      (heading "Grades")
+      (txt "Class average: "
+        (to-fixed 1
+          (average
+            (map
+              (lambda (e) e.score)
+              scores.data))))
+      (txt "Passing: "
+        (summary (passing scores.data)))
+      (each e
+        (sort-by
+          (lambda (e) (- 0 e.score))
+          scores.data)
+        (h :gap 8
+          (txt e.name)
+          (txt (letter e.score) :weight bold))))))

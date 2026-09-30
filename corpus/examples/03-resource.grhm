@@ -1,0 +1,13 @@
+(app data
+  (data
+    (resource users "/api/users.json" :default (arr)))
+
+  (page "/" home
+    (v :pad 32 :gap 12
+      (heading "Users")
+      (if users.loading
+        (txt "Loading...")
+        (v :gap 8
+          (when users.error
+            (txt "Error: " users.error :color "#991b1b"))
+          (each u users.data (txt u.name)))))))

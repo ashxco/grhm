@@ -1,0 +1,81 @@
+(app store
+  (theme (token primary "#4f46e5") (token surface "#ffffff"))
+
+  (db
+    (table wishes (id auto) (name string) (done boolean :default false)))
+
+  (api
+    (get "/api/wishes"
+      (sort-by
+        (lambda (w) w.id)
+        (select wishes)))
+    (post "/api/wishes"
+      (insert wishes :name (trim body.name)))
+    (put "/api/wishes/{id}" (update wishes :id id :done body.done))
+    (delete "/api/wishes/{id}" (delete-row wishes :id id)))
+
+  (data
+    (resource products "/api/products.json" :default (arr))
+    (resource wishes "/api/wishes" :default (arr)))
+
+  (state cart-count 0)
+
+  (state cart-open false)
+
+  (state sort-key "name")
+
+  (fn by-key (key items)
+    (sort-by
+      (lambda (p)
+        (if (= key "name") p.name p.price))
+      items))
+
+  (fn subtotal (items)
+    (reduce
+      (lambda (acc p) (+ acc p.price))
+      0
+      items))
+
+  (use "./lib/pricing.ts" (import discounted))
+
+  (include "components.grhm")
+
+  (include "pages/home.grhm")
+
+  (include "pages/catalog.grhm")
+
+  (include "pages/detail.grhm")
+
+  (include "pages/wishlist.grhm"))
+
+(tests
+  (test "home renders and navigates to the catalog"
+    (visit "/")
+    (expect-text "New arrivals")
+    (click "Shop all")
+    (expect-url "/products")
+    (expect-text "All products"))
+  (test "cart dialog opens and closes with Escape"
+    (visit "/")
+    (click "Cart")
+    (expect-text "Your cart")
+    (press "Escape")
+    (expect-gone "Your cart"))
+  (test "adding to cart updates the count"
+    (visit "/products/1")
+    (click "Add to cart")
+    (expect-text "In cart: 1"))
+  (test "pure fns compute"
+    (visit "/")
+    (expect-eq
+      (subtotal
+        (arr (obj :price 2) (obj :price 3)))
+      5))
+  (test "wishlist persists wishes through the api"
+    (visit "/wishlist")
+    (fill wish-input "A pony")
+    (click "Add wish")
+    (expect-text "A pony")
+    (expect-text "Wish added")
+    (click "Granted")
+    (expect-text "✓ granted")))

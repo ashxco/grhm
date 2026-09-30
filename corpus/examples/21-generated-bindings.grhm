@@ -1,0 +1,19 @@
+(app binding-names
+  (state props "Outer state")
+
+  (state ev "destination")
+
+  (component fragment
+    (props (label string))
+    (each value (arr 1 2) (txt label) (txt value)))
+
+  (page "/{id}" home
+    (txt props)
+    (txt id)
+    (fragment :label props)
+    (table sum
+      (arr (obj :amount 3))
+      (col "Total"
+        (txt
+          (sum (arr sum.amount 2)))))
+    (link "Go" :to (path "/{id}" :id ev))))

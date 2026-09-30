@@ -1,0 +1,67 @@
+{
+  "name": "grhm",
+  "version": "0.2.0",
+  "description": "GRHM: Generative Reactive Hypermedia Metalanguage. A machine-native semantic UI language that compiles to React + TypeScript + CSS.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "compiler",
+    "language",
+    "react",
+    "codegen",
+    "llm",
+    "ui"
+  ],
+  "bin": {
+    "grhm": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "corpus"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-runtime.mjs",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:corpus": "vitest run tests/corpus.test.ts tests/corpus-output.test.ts",
+    "test:parity": "vitest run tests/eval.test.ts tests/parity-random.test.ts",
+    "site:dev": "vite site/dist --host 127.0.0.1 --port 4317 --strictPort",
+    "site:sync": "npm run build && node site/scripts/sync-content.mjs && node site/scripts/build-demo.mjs",
+    "site:check": "node site/scripts/check.mjs",
+    "test:watch": "vitest",
+    "bench": "node scripts/bench.mjs",
+    "evals": "node scripts/evals.mjs",
+    "prepublishOnly": "npm run release:check",
+    "test:browser": "node scripts/browser-regressions.mjs",
+    "test:package": "node scripts/release-smoke.mjs",
+    "test:container": "node scripts/release-smoke.mjs --container",
+    "release:check": "npm audit --audit-level=high && npm run check && npm run build && npm test && npm run bench && npm run test:load && npm run evals && npm run site:sync && npm run site:check && npm run test:browser && npm run test:package",
+    "test:load": "node scripts/bench-server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.62.1",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "js-tiktoken": "1.0.21",
+    "jsdom": "^30.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.11"
+  }
+}

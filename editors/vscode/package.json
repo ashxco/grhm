@@ -1,0 +1,55 @@
+{
+  "name": "grhm-vscode",
+  "displayName": "GRHM",
+  "description": "Language support for GRHM (.grhm): diagnostics, hover, completion, definitions, references, rename, and formatting via the grhm LSP.",
+  "version": "0.2.0",
+  "publisher": "grhm",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:grhm"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "grhm",
+        "extensions": [
+          ".grhm"
+        ],
+        "aliases": [
+          "GRHM"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "grhm",
+        "scopeName": "source.grhm",
+        "path": "./syntaxes/grhm.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "GRHM",
+      "properties": {
+        "grhm.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the grhm CLI used to start the language server. When empty, the workspace's node_modules/.bin/grhm is used, falling back to `npx grhm`."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "scripts": {
+    "package": "npx @vscode/vsce package"
+  }
+}

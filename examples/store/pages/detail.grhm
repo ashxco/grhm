@@ -1,0 +1,14 @@
+(page "/products/{id}" detail
+  (v :pad 32 :gap 16 :max-w 640 :margin "0 auto" :enter fade :dur 200
+    (link "Back to products" :to "/products")
+    (heading "Product " id)
+    (tabs
+      (tab "Description" (txt "You are viewing product " id "."))
+      (tab "Shipping"
+        (txt "Ships in 2-4 business days. Free over $50.")))
+    (h :gap 12 :align center
+      (btn "Add to cart" :variant primary
+        (click
+          (set cart-count (+ cart-count 1))
+          (call localStorage.setItem "grhm-cart" (concat cart-count))))
+      (txt "In cart: " cart-count))))

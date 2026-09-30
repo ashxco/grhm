@@ -1,0 +1,9 @@
+(component product-card
+  (props (name string) (price number) (image string) (on-view action))
+  (card :gap 8 :hover lift
+    (img image :alt name)
+    (txt name :weight medium)
+    (h :gap 8 :align baseline
+      (money (discounted price))
+      (money price :size 13 :color "#a1a1aa"))
+    (btn "View" (click on-view))))

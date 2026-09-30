@@ -1,0 +1,28 @@
+(app widgets
+  (data
+    (resource items "/api/items.json" :default (arr)))
+
+  (state dialog-open false)
+
+  (state filter "all")
+
+  (page "/" home
+    (v :pad 32 :gap 16
+      (h :gap 8
+        (btn "Help"
+          (click (set dialog-open true)))
+        (menu "Filter"
+          (item "All" (set filter "all"))
+          (item "Active" (set filter "active"))))
+      (dialog :open dialog-open :title "Help"
+        (txt "Pick a filter, then review the table.")
+        (btn "Got it"
+          (click (set dialog-open false))))
+      (tabs
+        (tab "Table"
+          (if items.loading
+            (txt "Loading...")
+            (table i items.data
+              (col "Name" i.name)
+              (col "Status" i.status))))
+        (tab "About" (txt "Data loads from /api/items.json."))))))

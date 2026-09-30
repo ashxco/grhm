@@ -1,0 +1,49 @@
+(app triage
+  (enum status open closed archived)
+
+  (fn describe
+    ((s string))
+    (match s
+      ("open" "Needs attention")
+      ("closed" "Done")
+      (else "Filed away")))
+
+  (fn score
+    ((n number))
+    (cond
+      ((> n 100) "high")
+      ((> n 10) "medium")
+      (else "low")))
+
+  (fn label
+    ((name string) (count number))
+    (fmt "{name}: {count} items" :name name :count count))
+
+  (state current status.open)
+
+  (state volume 42)
+
+  (page "/" home
+    (v :pad 32 :gap 16 :max-w 640 :margin "0 auto"
+      (heading "Triage")
+      (txt (describe current))
+      (txt (label "Queue" volume))
+      (txt "Priority: " (score volume))
+      (txt
+        (or-else
+          (get (obj :open "green" :closed "gray") current)
+          "unknown"))
+      (h :gap 8
+        (btn "Open"
+          (click (set current status.open)))
+        (btn "Close" :variant primary
+          (click (set current status.closed)))
+        (btn "Archive"
+          (click (set current status.archived)))))))
+
+(tests
+  (test "pure fns"
+    (visit "/")
+    (expect-eq (describe "open") "Needs attention")
+    (expect-eq (score 50) "medium")
+    (expect-eq (label "Inbox" 3) "Inbox: 3 items")))

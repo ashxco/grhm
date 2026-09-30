@@ -1,0 +1,10 @@
+(app identity
+  (auth users :provider "./lib/identity.ts")
+
+  (api
+    (get "/api/profile" :auth true (obj :email user.email)))
+
+  (page "/" home
+    (v :pad 24 :gap 12
+      (heading "External identity")
+      (txt "The configured provider verifies credentials and maps them to a local user."))))

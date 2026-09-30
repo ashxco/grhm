@@ -1,0 +1,179 @@
+(app standard-library
+  (fn sample-0 ()
+    (keys (obj :a 1)))
+
+  (fn sample-1 ()
+    (values (obj :a 1)))
+
+  (fn sample-2 ()
+    (entries (obj :a 1)))
+
+  (fn sample-3 ()
+    (from-entries
+      (arr (arr "a" 1))))
+
+  (fn sample-4 ()
+    (assoc (obj :a 1) "b" true))
+
+  (fn sample-5 ()
+    (dissoc (obj :a 1 :b true) "a"))
+
+  (fn sample-6 ()
+    (merge (obj :a 1) (obj :a true)))
+
+  (fn sample-7 ()
+    (has-key (obj :a 1) "a"))
+
+  (fn sample-8 () (json-parse "[1,true]"))
+
+  (fn sample-9 ()
+    (json-stringify (arr 1 true)))
+
+  (fn sample-10 ()
+    (flat-map
+      (lambda (x) (arr x x))
+      (arr 1 2)))
+
+  (fn sample-11 ()
+    (flatten
+      (arr (arr 1) (arr 2))))
+
+  (fn sample-12 ()
+    (unique (arr 1 1 2)))
+
+  (fn sample-13 ()
+    (zip (arr 1 2) (arr 3)))
+
+  (fn sample-14 ()
+    (chunk 2 (arr 1 2 3)))
+
+  (fn sample-15 ()
+    (group-by
+      (lambda (x)
+        (to-str (mod x 2)))
+      (arr 1 2 3)))
+
+  (fn sample-16 () (regex-test "^a" "ABC" "i"))
+
+  (fn sample-17 () (regex-find "(a)?b" "b"))
+
+  (fn sample-18 () (regex-replace "a" "x" "banana"))
+
+  (fn sample-19 () (url-encode "a/b"))
+
+  (fn sample-20 () (url-decode "a%2Fb"))
+
+  (fn sample-21 () (date-iso 0))
+
+  (fn sample-22 () (date-parse "1970-01-01T00:00:00.000Z"))
+
+  (fn sample-23 () (clamp 0 10 20))
+
+  (fn sample-24 () (trunc -1.9))
+
+  (fn sample-25 () (sign -0))
+
+  (fn sample-26 () (sin 0))
+
+  (fn sample-27 () (cos 0))
+
+  (fn sample-28 () (tan 0))
+
+  (fn sample-29 () (asin 0))
+
+  (fn sample-30 () (acos 1))
+
+  (fn sample-31 () (atan 0))
+
+  (fn sample-32 () (atan2 0 1))
+
+  (fn sample-33 () (exp 0))
+
+  (fn sample-34 () (log 1))
+
+  (fn sample-35 () (log10 100))
+
+  (page "/" home
+    (v
+      (heading "Standard library")
+      (txt
+        (json-stringify (sample-0)))
+      (txt
+        (json-stringify (sample-1)))
+      (txt
+        (json-stringify (sample-2)))
+      (txt
+        (json-stringify (sample-3)))
+      (txt
+        (json-stringify (sample-4)))
+      (txt
+        (json-stringify (sample-5)))
+      (txt
+        (json-stringify (sample-6)))
+      (txt
+        (json-stringify (sample-7)))
+      (txt
+        (json-stringify (sample-8)))
+      (txt
+        (json-stringify (sample-9)))
+      (txt
+        (json-stringify (sample-10)))
+      (txt
+        (json-stringify (sample-11)))
+      (txt
+        (json-stringify (sample-12)))
+      (txt
+        (json-stringify (sample-13)))
+      (txt
+        (json-stringify (sample-14)))
+      (txt
+        (json-stringify (sample-15)))
+      (txt
+        (json-stringify (sample-16)))
+      (txt
+        (json-stringify (sample-17)))
+      (txt
+        (json-stringify (sample-18)))
+      (txt
+        (json-stringify (sample-19)))
+      (txt
+        (json-stringify (sample-20)))
+      (txt
+        (json-stringify (sample-21)))
+      (txt
+        (json-stringify (sample-22)))
+      (txt
+        (json-stringify (sample-23)))
+      (txt
+        (json-stringify (sample-24)))
+      (txt
+        (json-stringify (sample-25)))
+      (txt
+        (json-stringify (sample-26)))
+      (txt
+        (json-stringify (sample-27)))
+      (txt
+        (json-stringify (sample-28)))
+      (txt
+        (json-stringify (sample-29)))
+      (txt
+        (json-stringify (sample-30)))
+      (txt
+        (json-stringify (sample-31)))
+      (txt
+        (json-stringify (sample-32)))
+      (txt
+        (json-stringify (sample-33)))
+      (txt
+        (json-stringify (sample-34)))
+      (txt
+        (json-stringify (sample-35))))))
+
+(tests
+  (test "records and collections"
+    (visit "/")
+    (expect-text "Standard library")
+    (expect-eq (sample-23) 10)
+    (expect-eq
+      (sample-14)
+      (arr (arr 1 2) (arr 3)))))

@@ -1,0 +1,30 @@
+(page "/products" catalog
+  (local email "")
+  (v :pad 32 :gap 24
+    (heading "All products")
+    (when products.error
+      (txt "Failed to load: " products.error :color "#991b1b"))
+    (h :gap 8 :align center
+      (menu "Sort"
+        (item "By name" (set sort-key "name"))
+        (item "By price" (set sort-key "price")))
+      (txt "Catalog total:")
+      (money (subtotal products.data)))
+    (grid :cols 3 :cols-sm 1 :gap 16
+      (each p
+        (by-key sort-key products.data)
+        (product-card :name p.name :price p.price :image p.image
+          :on-view (nav (path "/products/{id}" :id p.id)))))
+    (section :gap 8
+      (heading "Price list" :level 2 :size 20)
+      (if products.loading
+        (txt "Loading...")
+        (table p products.data
+          (col "Product" p.name)
+          (col "List price" (money p.price))
+          (col "Sale price"
+            (money (discounted p.price))))))
+    (form :max-w 360
+      (submit (set email ""))
+      (input :value email :label "Get restock alerts" :placeholder "you@example.com" :type email :required true)
+      (btn "Subscribe" :variant primary))))

@@ -1,0 +1,13 @@
+(app functions
+  (fn square
+    ((x number))
+    (* x x))
+
+  (fn total-squares (items)
+    (sum (map square items)))
+
+  (page "/" home
+    (v :pad 24 :gap 12
+      (heading "Pure functions")
+      (txt "Total: "
+        (total-squares (arr 1 2 3))))))

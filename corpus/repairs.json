@@ -1,0 +1,228 @@
+{
+  "$comment": "Diagnostic repair transcripts (PRD FR-15). Each entry shows a broken program, the stable diagnostic code the compiler emits, and the repaired program. Validated by tests/corpus.test.ts.",
+  "repairs": [
+    {
+      "name": "typo in a style prop",
+      "code": "E102",
+      "note": "Unknown property; the diagnostic includes a ':color' suggestion.",
+      "broken": "(app a (page \"/\" home (txt \"Hi\" :colr \"#111\")))",
+      "fixed": "(app a (page \"/\" home (txt \"Hi\" :color \"#111\")))"
+    },
+    {
+      "name": "reference to an undeclared name",
+      "code": "E201",
+      "note": "count was never declared; declare state before use.",
+      "broken": "(app a (page \"/\" home (txt \"Total: \" count)))",
+      "fixed": "(app a (state count 0) (page \"/\" home (txt \"Total: \" count)))"
+    },
+    {
+      "name": "navigation to a route that does not exist",
+      "code": "E203",
+      "note": "nav targets must match a declared page route.",
+      "broken": "(app a (page \"/\" home (btn \"Go\" (click (nav \"/missing\")))))",
+      "fixed": "(app a (page \"/\" home (btn \"Go\" (click (nav \"/about\")))) (page \"/about\" about (txt \"About\")))"
+    },
+    {
+      "name": "missing route parameter",
+      "code": "E206",
+      "note": "path templates require every {param} to be supplied.",
+      "broken": "(app a (page \"/\" home (btn \"View\" (click (nav (path \"/p/{id}\"))))) (page \"/p/{id}\" detail (txt id)))",
+      "fixed": "(app a (page \"/\" home (btn \"View\" (click (nav (path \"/p/{id}\" :id 1))))) (page \"/p/{id}\" detail (txt id)))"
+    },
+    {
+      "name": "arithmetic on a string",
+      "code": "E111",
+      "note": "Use concat for strings; + is numeric.",
+      "broken": "(app a (state n 0) (page \"/\" home (txt (+ n \"!\"))))",
+      "fixed": "(app a (state n 0) (page \"/\" home (txt (concat n \"!\"))))"
+    },
+    {
+      "name": "wrong argument count in a fn call",
+      "code": "E112",
+      "note": "double takes one parameter; the diagnostic shows the expected shape.",
+      "broken": "(app a (fn double (x) (* x 2)) (page \"/\" home (txt (double 3 4))))",
+      "fixed": "(app a (fn double (x) (* x 2)) (page \"/\" home (txt (double 3))))"
+    },
+    {
+      "name": "lambda with the wrong arity for reduce",
+      "code": "E112",
+      "note": "reduce folds with a two-parameter function (acc x).",
+      "broken": "(app a (page \"/\" home (txt (reduce (lambda (acc) acc) 0 (arr 1 2)))))",
+      "fixed": "(app a (page \"/\" home (txt (reduce (lambda (acc x) (+ acc x)) 0 (arr 1 2)))))"
+    },
+    {
+      "name": "dialog without open state",
+      "code": "E106",
+      "note": "dialog requires :open bound to a boolean state.",
+      "broken": "(app a (state show false) (page \"/\" home (dialog :title \"Hi\" (txt \"Body\"))))",
+      "fixed": "(app a (state show false) (page \"/\" home (dialog :open show :title \"Hi\" (txt \"Body\"))))"
+    },
+    {
+      "name": "stagger without an entrance animation",
+      "code": "E106",
+      "note": ":stagger sequences the children of an :enter animation.",
+      "broken": "(app a (page \"/\" home (v :stagger 60 (txt \"a\") (txt \"b\"))))",
+      "fixed": "(app a (page \"/\" home (v :enter fade :stagger 60 (txt \"a\") (txt \"b\"))))"
+    },
+    {
+      "name": "insert into a column that does not exist",
+      "code": "E803",
+      "note": "The table declares :name; the diagnostic suggests it for the :nmae typo.",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :nmae body.name))) (page \"/\" home (txt \"hi\")))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :name body.name))) (page \"/\" home (txt \"hi\")))"
+    },
+    {
+      "name": "send to a route the api does not declare",
+      "code": "E806",
+      "note": "send must target a declared (api ...) route with a matching method.",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :name body.name))) (state n \"\") (page \"/\" home (btn \"Add\" (click (send post \"/api/wish\" :name n)))))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :name body.name))) (state n \"\") (page \"/\" home (btn \"Add\" (click (send post \"/api/wishes\" :name n)))))"
+    },
+    {
+      "name": "server op used in a page expression",
+      "code": "E805",
+      "note": "select/insert/update/delete-row only run inside (api ...) handlers; pages read through resources.",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (get \"/api/wishes\" (select wishes))) (page \"/\" home (txt (count (select wishes)))))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (get \"/api/wishes\" (select wishes))) (data (resource wishes \"/api/wishes\" :default (arr))) (page \"/\" home (txt (count wishes.data))))"
+    },
+    {
+      "name": "body field not in the input contract",
+      "code": "E808",
+      "note": "Routes with (input ...) reject undeclared body fields; declare the field or fix the name.",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (input (name string)) (insert wishes :name body.nmae))) (page \"/\" home (txt \"hi\")))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (input (name string)) (insert wishes :name body.name))) (page \"/\" home (txt \"hi\")))"
+    },
+    {
+      "name": "send body missing a required input field",
+      "code": "E809",
+      "note": "The route contract declares (name string); the send must supply it.",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (input (name string)) (insert wishes :name body.name))) (page \"/\" home (btn \"Add\" (click (send post \"/api/wishes\")))))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (input (name string)) (insert wishes :name body.name))) (state n \"\") (page \"/\" home (btn \"Add\" (click (send post \"/api/wishes\" :name n)))))"
+    },
+    {
+      "name": "unknown enum member",
+      "code": "E812",
+      "note": "Enums are read as name.member; the diagnostic lists the valid members.",
+      "broken": "(app a (enum status open closed) (state s status.open) (page \"/\" home (btn \"Done\" (click (set s status.finished)))))",
+      "fixed": "(app a (enum status open closed) (state s status.open) (page \"/\" home (btn \"Done\" (click (set s status.closed)))))"
+    },
+    {
+      "name": "auth guard without an auth declaration",
+      "code": "E813",
+      "note": ":auth true requires (auth users) so sessions exist.",
+      "broken": "(app a (db (table notes (id auto) (text string))) (api (get \"/api/notes\" :auth true (select notes))) (page \"/\" home (txt \"hi\")))",
+      "fixed": "(app a (auth users) (db (table notes (id auto) (text string))) (api (get \"/api/notes\" :auth true (select notes))) (page \"/\" home (txt \"hi\")))"
+    },
+    {
+      "name": "non-exhaustive match over an enum",
+      "code": "E815",
+      "note": "match over an enum-typed value must cover every member or end with (else ...).",
+      "broken": "(app a (enum status open closed) (state s status.open) (page \"/\" home (txt (match s (\"open\" \"O\")))))",
+      "fixed": "(app a (enum status open closed) (state s status.open) (page \"/\" home (txt (match s (\"open\" \"O\") (\"closed\" \"C\")))))"
+    },
+    {
+      "name": "live resource without a server",
+      "code": "E816",
+      "note": ":live true subscribes to the generated server's change feed, so the app must declare (db ...) or (api ...).",
+      "broken": "(app a (data (resource notes \"/api/notes\" :live true)) (page \"/\" home (each n notes.data (txt n.text))))",
+      "fixed": "(app a (db (table notes (id auto) (text string))) (api (get \"/api/notes\" (select notes))) (data (resource notes \"/api/notes\" :live true)) (page \"/\" home (each n notes.data (txt n.text))))"
+    },
+    {
+      "name": "file-input without an uploads declaration",
+      "code": "E818",
+      "note": "file-input posts to /api/uploads, which only exists when the app declares (uploads ...).",
+      "broken": "(app a (db (table t (id auto))) (state photo \"\") (page \"/\" home (file-input :label \"Photo\" :to photo)))",
+      "fixed": "(app a (uploads) (db (table t (id auto))) (state photo \"\") (page \"/\" home (file-input :label \"Photo\" :to photo)))"
+    },
+    {
+      "name": "server callback depends on browser globals",
+      "code": "E805",
+      "note": "Server effect validation follows callbacks and let initializers; use only server-safe functions in an API handler.",
+      "broken": "(app a (fn viewport (x) window.inner-width) (api (get \"/api/widths\" (let ((widths (map viewport (arr 1)))) widths))) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (fn viewport (x) x) (api (get \"/api/widths\" (let ((widths (map viewport (arr 1)))) widths))) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "known scalar used as a list callback",
+      "code": "E109",
+      "note": "Higher-order list operations require a callable value; replace the numeric binding with a lambda or declared function.",
+      "broken": "(app a (page \"/\" home (txt (let ((callback 3)) (map callback (arr 1 2))))))",
+      "fixed": "(app a (page \"/\" home (txt (let ((callback (lambda (x) (* x 3)))) (map callback (arr 1 2))))))"
+    },
+    {
+      "name": "column references an unknown table",
+      "code": "E819",
+      "note": ":references must name a declared table; the foreign key targets its id column.",
+      "broken": "(app a (db (table votes (id auto) (note-id number :references notes))) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (db (table notes (id auto) (text string)) (table votes (id auto) (note-id number :references notes))) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "nullable list lookup used as a required number",
+      "code": "E111",
+      "note": "first, last, nth, and find can return no value; guard with not-null or provide an or-else fallback before arithmetic.",
+      "broken": "(app a (page \"/\" home (txt (+ (first (arr 1 2)) 1))))",
+      "fixed": "(app a (page \"/\" home (txt (+ (or-else (first (arr 1 2)) 0) 1))))"
+    },
+    {
+      "name": "typed callback receives inferred string list elements",
+      "code": "E111",
+      "note": "List element types flow into declared callback parameters. Supply the numeric elements required by the increment function.",
+      "broken": "(app a (fn increment ((value number)) (+ value 1)) (page \"/\" home (txt (map increment (arr \"one\" \"two\")))))",
+      "fixed": "(app a (fn increment ((value number)) (+ value 1)) (page \"/\" home (txt (map increment (arr 1 2)))))"
+    },
+    {
+      "name": "optional input used for a required database column",
+      "code": "E111",
+      "note": "Optional input fields keep their nullable scalar type. Supply a fallback before storing the value in a required column.",
+      "broken": "(app a (db (table notes (id auto) (text string))) (api (post \"/api/notes\" (input (text string :optional true)) (insert notes :text body.text))) (page \"/\" home (txt \"Notes\")))",
+      "fixed": "(app a (db (table notes (id auto) (text string))) (api (post \"/api/notes\" (input (text string :optional true)) (insert notes :text (or-else body.text \"Untitled\")))) (page \"/\" home (txt \"Notes\")))"
+    },
+    {
+      "name": "numeric standard library operand",
+      "code": "E111",
+      "note": "Math operations require non-null numeric inputs. Convert text explicitly.",
+      "broken": "(app a (page \"/\" home (txt (clamp \"0\" 10 20))))",
+      "fixed": "(app a (page \"/\" home (txt (clamp (to-num \"0\") 10 20))))"
+    },
+    {
+      "name": "Limit excessive expression nesting",
+      "code": "E004",
+      "broken": "(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((0)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
+      "fixed": "(app a (page \"/\" home (txt \"Recovered\")))"
+    },
+    {
+      "name": "private upload policy requires authentication",
+      "code": "E818",
+      "note": "Declare auth before using owner-only upload storage.",
+      "broken": "(app a (uploads :public false) (page \"/\" home (txt \"Files\")))",
+      "fixed": "(app a (auth users) (uploads :public false) (page \"/\" home (txt \"Files\")))"
+    },
+    {
+      "name": "inverted input range",
+      "code": "E808",
+      "note": "Input constraints must have a valid range.",
+      "broken": "(app a (api (post \"/api/n\" (input (n number :min 10 :max 1)) body.n)) (page \"/\" home (txt \"Number\")))",
+      "fixed": "(app a (api (post \"/api/n\" (input (n number :min 1 :max 10)) body.n)) (page \"/\" home (txt \"Number\")))"
+    },
+    {
+      "name": "literal mutation exceeds input range",
+      "code": "E809",
+      "note": "Literal sends are checked against declared bounds.",
+      "broken": "(app a (api (post \"/api/n\" (input (n number :integer true :min 1 :max 10)) body.n)) (page \"/\" home (btn \"Send\" (click (send post \"/api/n\" :n 11)))))",
+      "fixed": "(app a (api (post \"/api/n\" (input (n number :integer true :min 1 :max 10)) body.n)) (page \"/\" home (btn \"Send\" (click (send post \"/api/n\" :n 5)))))"
+    },
+    {
+      "name": "bounded skeleton generation",
+      "code": "E103",
+      "note": "Static expansion must remain bounded.",
+      "broken": "(app a (page \"/\" home (skeleton :lines 1000000000000)))",
+      "fixed": "(app a (page \"/\" home (skeleton :lines 3)))"
+    },
+    {
+      "name": "reserved runtime endpoint",
+      "code": "E804",
+      "note": "Health endpoints cannot be shadowed by application routes.",
+      "broken": "(app a (api (get \"/healthz\" (obj :ok true))) (page \"/\" home (txt \"Health\")))",
+      "fixed": "(app a (api (get \"/api/status\" (obj :ok true))) (page \"/\" home (txt \"Health\")))"
+    }
+  ]
+}

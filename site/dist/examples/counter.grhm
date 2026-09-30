@@ -1,0 +1,12 @@
+(app counter
+  (state count 0)
+
+  (page "/" home
+    (v :gap 24 :pad 32
+      (heading "Counter")
+      (txt count :size 64)
+      (h :gap 12
+        (btn "Add one"
+          (click (set count (+ count 1))))
+        (btn "Reset"
+          (click (set count 0)))))))

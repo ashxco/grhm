@@ -1,0 +1,25 @@
+(app notes
+  (db
+    (table notes (id auto) (text string)))
+
+  (api
+    (get "/api/notes" (select notes))
+    (post "/api/notes"
+      (input (text string))
+      (insert notes :text body.text)))
+
+  (data
+    (resource notes "/api/notes" :default (arr)))
+
+  (state draft "")
+
+  (page "/" home
+    (v :pad 24 :gap 12
+      (heading "Notes")
+      (input :value draft :label "New note")
+      (btn "Add note"
+        (click
+          (send post "/api/notes" :text draft)
+          (refresh notes)
+          (set draft "")))
+      (each note notes.data (txt note.text)))))
