@@ -1,0 +1,13 @@
+(app interop
+  (use "./lib/format.ts" (import short-date formatShortDate))
+
+  (state saved false)
+
+  (page "/" home
+    (v :pad 32 :gap 8
+      (txt "Today: " (short-date))
+      (btn "Save"
+        (click
+          (set saved true)
+          (call localStorage.setItem "saved" "yes")))
+      (when saved (txt "Saved.")))))

@@ -1,0 +1,10 @@
+(app themed
+  (theme (token primary "#4f46e5") (token surface "#f4f4f5"))
+
+  (page "/" home
+    (v :pad 32 :pad-sm 12 :gap 16 :bg $surface
+      (heading "Tokens and breakpoints")
+      (grid :cols 3 :cols-sm 1 :gap 12
+        (card :pad 16 (txt "One" :color $primary))
+        (card :pad 16 (txt "Two"))
+        (card :pad 16 (txt "Three"))))))

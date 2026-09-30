@@ -1,0 +1,50 @@
+(app notes
+  (auth users)
+
+  (db
+    (table notes (id auto) (owner string) (text string)))
+
+  (api
+    (get "/api/notes" :auth true
+      (filter
+        (lambda (n) (= n.owner user.email))
+        (select notes)))
+    (post "/api/notes" :auth true
+      (input (text string))
+      (insert notes :owner user.email :text (trim body.text))))
+
+  (data
+    (resource notes "/api/notes" :default (arr)))
+
+  (state email "")
+
+  (state password "")
+
+  (state draft "")
+
+  (page "/" home
+    (v :pad 32 :gap 16 :max-w 640 :margin "0 auto"
+      (heading "My notes")
+      (h :gap 8 :align end
+        (input :value email :label "Email" :type email)
+        (input :value password :label "Password" :type password)
+        (btn "Sign up"
+          (click
+            (send post "/api/auth/signup" :email email :password password)
+            (refresh notes)))
+        (btn "Log in" :variant primary
+          (click
+            (send post "/api/auth/login" :email email :password password)
+            (refresh notes)))
+        (btn "Log out"
+          (click (send post "/api/auth/logout") (refresh notes))))
+      (h :gap 8 :align end
+        (input :value draft :label "Note")
+        (btn "Add" :variant primary
+          (click
+            (try
+              (send post "/api/notes" :text draft)
+              (refresh notes)
+              (set draft "")
+              (catch (toast "Log in to add notes" :tone error))))))
+      (each n notes.data (txt n.text)))))

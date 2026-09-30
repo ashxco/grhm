@@ -1,0 +1,12 @@
+(app newsletter
+  (state subscribed false)
+
+  (page "/" home
+    (local email "")
+    (v :pad 32 :gap 12
+      (heading "Newsletter")
+      (if subscribed
+        (txt "Thanks for subscribing!")
+        (form
+          (submit (set subscribed true))
+          (input :value email :placeholder "you@example.com" :label "Email" :required true))))))

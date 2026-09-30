@@ -1,0 +1,31 @@
+(app literal-search
+  (db
+    (table entries
+      (id auto)
+      (label string :optional true)
+      (needle string :optional true))
+    (seed entries
+      (row :label "Save 100%" :needle "%")
+      (row :label "file_name" :needle "_")
+      (row :needle "missing")))
+
+  (api
+    (get "/api/entries"
+      (select entries
+        :where (or (= label null) (contains label needle))
+        :order id))
+    (get "/api/entries/{id}"
+      (select entries :where (= id id)))
+    (post "/api/search"
+      (input (needle string))
+      (select entries
+        :where (and (!= label null) (contains label body.needle))
+        :order id)))
+
+  (data
+    (resource entries "/api/entries" :default (arr)))
+
+  (page "/" home
+    (heading "Literal search")
+    (each entry entries.data
+      (txt (or-else entry.label "No label")))))

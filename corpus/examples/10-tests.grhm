@@ -1,0 +1,17 @@
+(app tested
+  (state n 0)
+
+  (page "/" home
+    (v :pad 32 :gap 8
+      (heading "Tested app")
+      (txt "Count: " n)
+      (btn "Add"
+        (click
+          (set n (+ n 1)))))))
+
+(tests
+  (test "increments"
+    (visit "/")
+    (expect-text "Count: 0")
+    (click "Add")
+    (expect-text "Count: 1")))

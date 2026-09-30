@@ -1,0 +1,13 @@
+(app counter
+  (state n 0)
+
+  (page "/" home
+    (v :pad 32 :gap 12
+      (heading "Counter")
+      (txt "Value: " n)
+      (h :gap 8
+        (btn "Increment"
+          (click
+            (set n (+ n 1))))
+        (btn "Reset"
+          (click (set n 0)))))))

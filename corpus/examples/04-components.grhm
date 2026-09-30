@@ -1,0 +1,12 @@
+(app components
+  (state likes 0)
+
+  (component like-button
+    (props (label string) (on-like action))
+    (btn label :variant primary (click on-like)))
+
+  (page "/" home
+    (v :pad 32 :gap 8
+      (txt "Likes: " likes)
+      (like-button :label "Like"
+        :on-like (set likes (+ likes 1))))))

@@ -1,0 +1,26 @@
+/** Public API of the GRHM compiler. */
+
+export * from './ast.js';
+export * from './diagnostics.js';
+export { parse } from './parser.js';
+export { format, projectNames } from './format.js';
+export type { NameStyle } from './format.js';
+export { assignIds } from './ids.js';
+export { analyze } from './analyze.js';
+export type { AppModel, PageModel, ComponentModel, ImportDecl, FnDecl, TableDecl, ColumnDecl, ApiRouteDecl, TestDecl } from './analyze.js';
+export { check, inferType } from './checker.js';
+export { compile, compileNodes, generate, computeRevision } from './codegen/index.js';
+export type { CompileResult, CompileOptions } from './codegen/index.js';
+export { applyPatch, applyPatchToProject } from './patch.js';
+export type { PatchResult } from './patch.js';
+export { loadProject, compileProject, projectRevision } from './project.js';
+export type { Project, ProjectFile, ReadFile } from './project.js';
+export { GrhmProject, loadConfig } from './sdk.js';
+export type { ProjectConfig, CheckSummary } from './sdk.js';
+export { handleRequest, runServer } from './server.js';
+export { runLsp } from './lsp.js';
+export { symbolAt, resolveSymbol, resolveSymbolAt, findReferences, validNewName } from './references.js';
+export type { SymbolInfo, SymbolKind } from './references.js';
+export { generateReference, referenceTokenEstimate } from './reference.js';
+export { genPlaywrightSpec, genVitestSpec, PLAYWRIGHT_CONFIG } from './testgen.js';
+export { lookupOp, allOpNames, allOps, STYLE_PROPS, MOTION_PROPS, EXPR_OPS, TEST_STEPS, BROWSER_GLOBALS } from './schema.js';

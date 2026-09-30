@@ -1,0 +1,31 @@
+(page "/wishlist" wishlist :title "Wishlist — store"
+  (local wish-name "")
+  (v :pad 32 :gap 16 :max-w 640 :margin "0 auto"
+    (link "Back home" :to "/")
+    (heading "Wishlist")
+    (txt "Stored in SQLite behind the generated API server." :color "#52525b")
+    (h :gap 8 :align end
+      (input :id "wish-input" :value wish-name :label "New wish" :placeholder "A better keyboard")
+      (btn "Add wish" :variant primary
+        (click
+          (try
+            (send post "/api/wishes" :name wish-name)
+            (refresh wishes)
+            (set wish-name "")
+            (toast "Wish added" :tone success)
+            (catch (toast "Could not add wish" :tone error))))))
+    (when wishes.loading (skeleton :lines 3))
+    (when wishes.error
+      (txt "Failed to load: " wishes.error :color "#991b1b"))
+    (each w wishes.data
+      (h :gap 8 :align center
+        (txt w.name :weight medium)
+        (when w.done (txt "✓ granted" :color "#15803d"))
+        (btn "Granted"
+          (click
+            (send put (path "/api/wishes/{id}" :id w.id) :done true)
+            (refresh wishes)))
+        (btn "Remove"
+          (click
+            (send delete (path "/api/wishes/{id}" :id w.id))
+            (refresh wishes)))))))

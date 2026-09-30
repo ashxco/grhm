@@ -1,0 +1,40 @@
+(app scopes
+  (fn increment (value)
+    (let
+      ((value (+ value 1)))
+      value))
+
+  (component listing
+    (props (items list))
+    (each items items (txt items)))
+
+  (component passthrough (slot))
+
+  (page "/" home
+    (listing :items (arr 1 2 3)))
+
+  (page "/items/{id}" detail :title id (txt "Item details"))
+
+  (page "/conditional" conditional
+    (if true (txt "Visible") (txt "Hidden")))
+
+  (page "/visible" visible
+    (when true (txt "Visible")))
+
+  (page "/loop" loop
+    (each item
+      (arr 1 2 3)
+      (txt (increment item)))))
+
+(tests
+  (test "sequential lexical shadowing"
+    (expect-eq (increment 1) 2)
+    (expect-eq
+      (let
+        ((value 3)
+         (read
+           (lambda () value)))
+        (let
+          ((value 4))
+          (call read)))
+      3)))

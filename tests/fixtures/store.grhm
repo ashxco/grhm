@@ -1,0 +1,200 @@
+(app store
+  (theme
+    (token primary "#4f46e5")
+    (token surface "#ffffff")
+    (dark
+      (token surface "#18181b")))
+
+  (i18n
+    (locale en
+      (msg store-title "Storefront")
+      (msg greeting "Hello, {name}!"))
+    (locale fr
+      (msg store-title "Boutique")
+      (msg greeting "Bonjour, {name} !")))
+
+  (enum availability in-stock backorder discontinued)
+
+  (auth users)
+
+  (data
+    (resource products "/api/products.json" :default (arr))
+    (resource reviews "/api/reviews" :default (arr) :poll 60 :live true))
+
+  (db
+    (table reviews
+      (id auto)
+      (author string)
+      (stars number :default 5 :indexed true)
+      (published boolean :default false))
+    (table votes
+      (id auto)
+      (review-id number :references reviews)
+      (helpful boolean :default true))
+    (seed reviews
+      (row :author "Ada" :stars 5 :published true)))
+
+  (env support-email :default "help@example.com")
+
+  (uploads :max-kb 1024)
+
+  (job audit-reviews :every 3600
+    (count (select reviews :where (= published false))))
+
+  (api
+    (get "/api/reviews" (select reviews :order id))
+    (get "/api/top-reviews" (select reviews :where (and (>= stars 4) (= published true)) :order stars :desc true :limit 10))
+    (get "/api/mine" :auth true (select reviews :where (= author user.email)))
+    (get "/api/config" (obj :email env.support-email))
+    (post "/api/reviews"
+      (input (author string) (stars number))
+      (if (> body.stars 0)
+        (tx (insert reviews :author (trim body.author) :stars body.stars))
+        (fail 400 "stars must be positive")))
+    (put "/api/reviews/{id}" (update reviews :id id :published body.published))
+    (delete "/api/reviews/{id}" (delete-row reviews :id id)))
+
+  (state cart-count 0)
+
+  (state cart-open false)
+
+  (state sort-key "price")
+
+  (state locale "en")
+
+  (state stock availability.in-stock)
+
+  (fn subtotal ((items list))
+    (reduce (lambda (acc p) (+ acc p.price)) 0 items))
+
+  (fn by-key ((key string) (items list))
+    (sort-by (lambda (p) (if (= key "name") p.name p.price)) items))
+
+  (fn cheap-names ((items list))
+    (let ((cheap (filter (lambda (p) (< p.price 50)) items)))
+      (join ", " (map (lambda (p) p.name) cheap))))
+
+  (fn stock-label ((s string))
+    (match s
+      ("in-stock" "Ready to ship")
+      ("backorder" "Ships next month")
+      (else "No longer sold")))
+
+  (component product-card
+    (props (name string) (price number) (image string) (on-view action))
+    (card :gap 8
+      (img image :alt name)
+      (txt name :weight medium)
+      (money price)
+      (btn "View" (click on-view))))
+
+  (page "/" home :title (t store-title)
+    (v :pad 32 :gap 24 :max-w 960 :margin "0 auto" :enter fade-up :dur 300
+      (section :gap 8
+        (heading (t store-title))
+        (txt (t greeting :name "friend") :color "#52525b")
+        (h :gap 8
+          (btn "Shop all" :variant primary (click (nav "/products")))
+          (btn "Cart" (click (set cart-open true)))
+          (menu "Sort"
+            (item "Price" (set sort-key "price"))
+            (item "Name" (set sort-key "name")))
+          (txt "In cart: " cart-count)))
+      (dialog :open cart-open :title "Your cart"
+        (txt "Items: " cart-count)
+        (btn "Close" (click (set cart-open false))))
+      (if products.loading
+        (skeleton :lines 4)
+        (grid :cols 4 :cols-sm 1 :gap 16
+          (each p products.data
+            (product-card
+              :id p.id
+              :name p.name
+              :price p.price
+              :image p.image
+              :on-view (nav (path "/products/{id}" :id p.id))))))))
+
+  (page "/products" catalog
+    (local email "")
+    (local photo-url "")
+    (v :pad 32 :gap 16
+      (heading "All products")
+      (when products.error
+        (txt "Failed to load: " products.error :color "#991b1b"))
+      (txt "Under $50: " (cheap-names products.data))
+      (txt "Subtotal: " (to-fixed 2 (subtotal products.data)))
+      (txt (stock-label stock))
+      (txt
+        (cond
+          ((= sort-key "name") "Sorted by name")
+          (else "Sorted by price")))
+      (txt (or-else (get (obj :price "$" :name "A-Z") sort-key) "?"))
+      (grid :cols 3 :cols-sm 1 :gap 16
+        (each p (by-key sort-key products.data)
+          (product-card
+            :name p.name
+            :price p.price
+            :image p.image
+            :on-view (nav (path "/products/{id}" :id p.id)))))
+      (table p products.data
+        (col "Name" p.name)
+        (col "Price" (money p.price)))
+      (form
+        (submit (set email ""))
+        (input :value email :placeholder "you@example.com" :label "Newsletter" :required true :max-len 80))
+      (file-input :label "Product photo" :to photo-url)
+      (when (!= photo-url "") (img photo-url :alt "Uploaded photo"))))
+
+  (page "/reviews" review-board
+    (local author "")
+    (v :pad 32 :gap 16
+      (heading "Reviews")
+      (when reviews.loading (skeleton :lines 3))
+      (form
+        (submit
+          (try
+            (send post "/api/reviews" :author author :stars 5)
+            (refresh reviews)
+            (set author "")
+            (toast "Review posted" :tone success)
+            (catch (toast "Could not post review" :tone error))))
+        (input :value author :label "Your name" :required true))
+      (each r reviews.data
+        (h :gap 8
+          (txt r.author)
+          (txt (fmt "{n} stars" :n r.stars))
+          (btn "Publish" (click (send put (path "/api/reviews/{id}" :id r.id) :published true) (refresh reviews)))
+          (btn "Delete" (click (send delete (path "/api/reviews/{id}" :id r.id)) (refresh reviews)))))))
+
+  (page "/products/{id}" detail
+    (v :pad 32 :gap 16 :max-w 640 :margin "0 auto"
+      (link "Back to products" :to "/products")
+      (heading "Product " id)
+      (tabs
+        (tab "Description" (txt "You are viewing product " id "."))
+        (tab "Shipping" (txt "Ships in 2-4 business days.")))
+      (btn "Add to cart" :variant primary
+        (click
+          (set cart-count (+ cart-count 1))
+          (call localStorage.setItem "cart" (concat cart-count)))))))
+
+(tests
+  (test "home renders and navigates"
+    (visit "/")
+    (expect-text "Storefront")
+    (click "Shop all")
+    (expect-url "/products")
+    (expect-text "All products"))
+  (test "cart dialog opens and closes with Escape"
+    (visit "/")
+    (click "Cart")
+    (expect-text "Your cart")
+    (press "Escape")
+    (expect-gone "Your cart"))
+  (test "pure fns compute"
+    (visit "/")
+    (expect-eq (subtotal (arr (obj :price 2) (obj :price 3))) 5)
+    (expect-eq (stock-label "backorder") "Ships next month"))
+  (test "home visual baseline"
+    (visit "/")
+    (screenshot "home")))

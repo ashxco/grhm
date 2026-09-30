@@ -1,0 +1,10 @@
+[
+  { "id": "aurora-lamp", "name": "Aurora Lamp", "price": 89, "image": "https://picsum.photos/seed/aurora/400/300" },
+  { "id": "field-jacket", "name": "Field Jacket", "price": 240, "image": "https://picsum.photos/seed/jacket/400/300" },
+  { "id": "walnut-desk", "name": "Walnut Desk", "price": 1120, "image": "https://picsum.photos/seed/desk/400/300" },
+  { "id": "trail-flask", "name": "Trail Flask", "price": 42, "image": "https://picsum.photos/seed/flask/400/300" },
+  { "id": "studio-chair", "name": "Studio Chair", "price": 380, "image": "https://picsum.photos/seed/chair/400/300" },
+  { "id": "linen-throw", "name": "Linen Throw", "price": 75, "image": "https://picsum.photos/seed/throw/400/300" },
+  { "id": "brass-kettle", "name": "Brass Kettle", "price": 130, "image": "https://picsum.photos/seed/kettle/400/300" },
+  { "id": "granite-mortar", "name": "Granite Mortar", "price": 58, "image": "https://picsum.photos/seed/mortar/400/300" }
+]

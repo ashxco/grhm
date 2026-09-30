@@ -1,0 +1,9 @@
+(app motion
+  (page "/" home
+    (v :pad 32 :gap 16 :enter fade-up :dur 400 :ease spring
+      (heading "Motion")
+      (v :gap 8 :enter fade :stagger 80
+        (txt "First")
+        (txt "Second")
+        (txt "Third"))
+      (card :pad 16 :hover lift (txt "Hover me")))))

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "GRHM",
+  "scopeName": "source.grhm",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#constant" },
+    { "include": "#keyword-prop" },
+    { "include": "#token-ref" },
+    { "include": "#operation" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.semicolon.grhm",
+      "match": ";.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.grhm",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.grhm", "match": "\\\\." },
+        { "name": "variable.other.interpolation.grhm", "match": "\\{[a-z][a-z0-9-]*\\}" }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.grhm",
+      "match": "(?<=[\\s(])-?\\d+(\\.\\d+)?(?=[\\s)])"
+    },
+    "constant": {
+      "name": "constant.language.grhm",
+      "match": "(?<=[\\s(])(true|false|null)(?=[\\s)])"
+    },
+    "keyword-prop": {
+      "name": "entity.other.attribute-name.grhm",
+      "match": ":[a-z][a-z0-9-]*"
+    },
+    "token-ref": {
+      "name": "variable.other.constant.grhm",
+      "match": "\\$[a-z][a-z0-9-]*"
+    },
+    "operation": {
+      "match": "(?<=\\()([a-z+\\-*/=!<>][a-z0-9.<>=!-]*)",
+      "captures": {
+        "1": { "name": "entity.name.function.grhm" }
+      }
+    }
+  }
+}

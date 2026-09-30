@@ -1,0 +1,96 @@
+(app typed-values
+  (db
+    (table people (id auto) (name string) (age number :optional true)))
+
+  (fn increment
+    ((value number))
+    (+ value 1))
+
+  (fn identity (value) value)
+
+  (fn person-name
+    ((person people))
+    person.name)
+
+  (fn make-incrementer
+    ((amount number))
+    (lambda (value) (+ value amount)))
+
+  (fn record-branch
+    ((flag boolean))
+    (if flag (obj :a 1) (obj :b "x")))
+
+  (fn choose-operation
+    ((flag boolean))
+    (if flag
+      (lambda (value) (+ value 1))
+      (lambda (value) (concat value "!"))))
+
+  (fn optional-score
+    ((flag boolean))
+    (if flag 10 null))
+
+  (state numbers
+    (identity (arr 1 2 3)))
+
+  (state names
+    (map
+      (lambda (value) (to-str value))
+      numbers))
+
+  (state mixed-records
+    (arr (obj :a 1) (obj :b "x")))
+
+  (state maybe-numbers
+    (if true (arr 1 2) null))
+
+  (state next (make-incrementer 2))
+
+  (page "/" home
+    (local score (optional-score true))
+    (local operation (choose-operation true))
+    (v :gap 12 :pad 24
+      (heading "Typed values")
+      (txt "Incremented: " (call next 3))
+      (txt "Operation: " (call operation 3))
+      (txt "Total: " (sum maybe-numbers))
+      (txt "Sorted: "
+        (join "," (sort-by identity maybe-numbers)))
+      (txt "Boolean key: "
+        (get (obj :true "yes") true))
+      (txt "Mixed membership: "
+        (contains (arr 1 "x") "x"))
+      (txt "First: "
+        (or-else (first numbers) 0))
+      (if
+        (not-null score)
+        (txt "Score: " (+ score 1))
+        (txt "No score"))
+      (each name names (txt name))
+      (each record mixed-records
+        (txt (or-else record.a 0) ":" (or-else record.b "missing")))
+      (txt
+        (or-else
+          (get (record-branch true) "a")
+          0)))))
+
+(tests
+  (test "inferred functions and nullable values"
+    (visit "/")
+    (expect-text "Typed values")
+    (expect-eq
+      (map increment (arr 1 2 3))
+      (arr 2 3 4))
+    (expect-eq
+      (let
+        ((next (make-incrementer 2)))
+        (call next 3))
+      5)
+    (expect-eq
+      (or-else
+        (first (arr))
+        0)
+      0)
+    (expect-eq
+      (get (record-branch false) "b")
+      "x")))
