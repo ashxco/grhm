@@ -1,15 +1,17 @@
-import { ChildProcess, execFileSync, execSync, spawn, spawnSync } from 'node:child_process';
+import { ChildProcess, ChildProcessWithoutNullStreams, execFileSync, execSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { SExpr, opName, walkLists } from '../src/ast.js';
 import { compile } from '../src/codegen/index.js';
+import { CODE_DOCS } from '../src/diagnostics.js';
 import { parse } from '../src/parser.js';
 import { MAX_PROTOCOL_BYTES } from '../src/limits.js';
 import { findReferences, resolveSymbolAt } from '../src/references.js';
+import { displayCode, explainCode, loadRepairs, nearestCodes } from '../src/repairs.js';
 import { DEFAULT_APP_GRHM, VITE_CONFIG } from '../src/scaffold.js';
 import { handleRequest } from '../src/server.js';
 import { GrhmProject } from '../src/sdk.js';
@@ -109,6 +111,118 @@ describe('SDK and server protocol', () => {
     expect(reference.tokenEstimate).toBeGreaterThan(0);
   });
 
+  it('explains one diagnostic code with its corpus repairs', () => {
+    const project = GrhmProject.fromCwd(projectDir);
+    const all = handleRequest(project, 'codes', {}) as { codes: Record<string, string> };
+    expect(all.codes['E111']).toBe(CODE_DOCS['E111']);
+
+    const one = handleRequest(project, 'codes', { code: 'e111' }) as { ok: boolean; code: string; doc: string; repairs: { code: string; fix?: string }[] };
+    expect(one).toMatchObject({ ok: true, code: 'E111', doc: CODE_DOCS['E111'] });
+    expect(one.repairs.length).toBeGreaterThan(0);
+    expect(one.repairs.every((r) => r.code === 'E111')).toBe(true);
+    expect(one.repairs.some((r) => r.fix === 'safe')).toBe(true);
+    expect(handleRequest(project, 'codes', { code: 'E1111' })).toEqual({ ok: false, code: 'E1111', suggestions: ['E111'] });
+  });
+
+  it('locates the corpus beside the compiler and tolerates a layout without it', () => {
+    expect(loadRepairs().length).toBeGreaterThanOrEqual(50);
+    expect(loadRepairs(path.join(os.tmpdir(), 'grhm-no-such-corpus', 'repairs.json'))).toEqual([]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-repairs-'));
+    try {
+      const noNote = path.join(dir, 'no-note.json');
+      fs.writeFileSync(noNote, JSON.stringify({ repairs: [{ name: 'x', code: 'E101', broken: '(app a)', fixed: '(app a)' }] }));
+      expect(() => loadRepairs(noNote)).toThrow('repairs[0].note must be a string');
+      const badLevel = path.join(dir, 'bad-level.json');
+      fs.writeFileSync(badLevel, JSON.stringify({ repairs: [{ name: 'x', code: 'E101', note: '', broken: '(app a)', fixed: '(app a)', fix: 'placeholder' }] }));
+      expect(() => loadRepairs(badLevel)).toThrow('repairs[0].fix must be "safe" or "review"');
+      const noList = path.join(dir, 'no-list.json');
+      fs.writeFileSync(noList, JSON.stringify({ repairs: {} }));
+      expect(() => loadRepairs(noList)).toThrow('expected { "repairs": [...] }');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    expect(explainCode(' e111 ')).toMatchObject({ code: 'E111', doc: CODE_DOCS['E111'] });
+    expect(explainCode('E9999')).toBeUndefined();
+    expect(nearestCodes('W80')).toEqual(['W801']);
+    expect(nearestCodes('nope')).toEqual([]);
+    // An over-long input is no near miss: no edit distances are computed and the echo is cut short.
+    const long = 'E' + '1'.repeat(40);
+    expect(nearestCodes(long)).toEqual([]);
+    expect(displayCode(long)).toBe('E111111111111111…');
+    expect(displayCode('E1111')).toBe('E1111');
+    expect(handleRequest(GrhmProject.fromCwd(projectDir), 'codes', { code: long })).toEqual({ ok: false, code: 'E111111111111111…', suggestions: [] });
+  });
+
+  it('answers fix requests in preview and write modes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-server-fix-'));
+    try {
+      const entry = path.join(dir, 'app.grhm');
+      const broken = '(app a (page "/" home (txt "Hi" :colr "#111")))';
+      const repaired = '(app a (page "/" home (txt "Hi" :color "#111")))';
+      fs.writeFileSync(entry, broken);
+      const project = new GrhmProject({ root: dir, entry: 'app.grhm', outDir: 'gen' });
+      type FixReply = { ok: boolean; clean: boolean; revision: string; applied: { code: string }[]; newSources?: Record<string, string> };
+
+      const preview = handleRequest(project, 'fix', { preview: true }) as FixReply;
+      expect(preview).toMatchObject({ ok: true, clean: true });
+      expect(preview.applied.map((a) => a.code)).toEqual(['E102']);
+      expect(preview.newSources).toEqual({ 'app.grhm': repaired });
+      expect(fs.readFileSync(entry, 'utf8')).toBe(broken);
+
+      expect(() => handleRequest(project, 'fix', { level: 'bogus' })).toThrow('"level"');
+      expect(() => handleRequest(project, 'fix', { fix: 'f123' })).toThrow('"fix"');
+      // A malformed dry run is an error, never a write: every optional field must have exactly its documented type.
+      expect(() => handleRequest(project, 'fix', { preview: 'yes' })).toThrow('"preview" must be a boolean');
+      expect(() => handleRequest(project, 'fix', { preview: 1 })).toThrow('"preview"');
+      expect(() => handleRequest(project, 'fix', { preview: true, maxPasses: 'x' })).toThrow('"maxPasses" must be a positive integer');
+      expect(() => handleRequest(project, 'fix', { preview: true, maxPasses: 0 })).toThrow('"maxPasses"');
+      expect(() => handleRequest(project, 'fix', { preview: true, maxPasses: 1.5 })).toThrow('"maxPasses"');
+      expect(() => handleRequest(project, 'fix', { preview: true, maxPasses: null })).toThrow('"maxPasses"');
+      expect(() => handleRequest(project, 'fix', { preview: true, revision: 1 })).toThrow('"revision" must be a string');
+      expect(() => handleRequest(project, 'fix', { preview: true, format: 'false' })).toThrow('"format" must be a boolean');
+      expect(() => handleRequest(project, 'patch', { patch: '(patch)', preview: 'yes' })).toThrow('"preview" must be a boolean');
+      expect(fs.readFileSync(entry, 'utf8')).toBe(broken);
+      const stale = handleRequest(project, 'fix', { revision: 'deadbeef' }) as { ok: boolean; conflict: boolean };
+      expect(stale).toMatchObject({ ok: false, conflict: true });
+      expect(fs.readFileSync(entry, 'utf8')).toBe(broken);
+
+      const written = handleRequest(project, 'fix', { level: 'safe' }) as FixReply;
+      expect(written).toMatchObject({ ok: true, clean: true, newSources: { 'app.grhm': repaired } });
+      expect(fs.readFileSync(entry, 'utf8')).toBe(repaired);
+      expect(handleRequest(project, 'check', {})).toMatchObject({ ok: true, revision: written.revision });
+      expect(fs.readdirSync(dir).filter((f) => f.startsWith('.grhm-write'))).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers fix requests with explicit ids, a code filter, a pass budget, and formatting off', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-server-fix-request-'));
+    try {
+      const entry = path.join(dir, 'app.grhm');
+      fs.writeFileSync(entry, '(app a (page "/" home (cardd (txt "Hi" :colr "#111"))))');
+      const project = new GrhmProject({ root: dir, entry: 'app.grhm', outDir: 'gen' });
+      type FixReply = { ok: boolean; clean: boolean; passes: number; stopped: string; applied: { id: string; code: string; pass: number }[]; newSources?: Record<string, string> };
+      const checked = handleRequest(project, 'check', {}) as { diagnostics: { code: string; fixes?: { id: string }[] }[] };
+      const outer = checked.diagnostics.find((d) => d.code === 'E101')?.fixes?.[0]?.id;
+      expect(outer).toMatch(/^f[0-9a-f]{8}$/);
+      // The code filter alone cannot reach the E102 the unknown op masks; an explicit id is exempt from the filter and unmasks it.
+      expect(handleRequest(project, 'fix', { preview: true, codes: ['E102'] })).toMatchObject({ ok: true, clean: false, passes: 0, stopped: 'fixed-point', applied: [] });
+      const requested = handleRequest(project, 'fix', { preview: true, codes: ['E102'], fix: [outer] }) as FixReply;
+      expect(requested.applied.map((a) => [a.id === outer, a.code, a.pass])).toEqual([[true, 'E101', 1], [false, 'E102', 2]]);
+      expect(requested.clean).toBe(true);
+      expect(handleRequest(project, 'fix', { preview: true, maxPasses: 1 })).toMatchObject({ ok: true, clean: false, passes: 1, stopped: 'max-passes' });
+      // Formatting off keeps a canonical file minimally edited; the default re-canonicalizes it.
+      const canonical = '(app a\n  (db\n    (table t (id auto)))\n\n  (state photo "")\n\n  (page "/" home (file-input :label "Photo" :to photo)))\n';
+      fs.writeFileSync(entry, canonical);
+      expect((handleRequest(project, 'fix', { preview: true }) as FixReply).newSources?.['app.grhm']).toBe(canonical.replace('(app a\n', '(app a\n  (uploads)\n\n'));
+      expect((handleRequest(project, 'fix', { preview: true, format: false }) as FixReply).newSources?.['app.grhm']).toBe(canonical.replace('(app a\n', '(app a (uploads)\n'));
+      expect(fs.readFileSync(entry, 'utf8')).toBe(canonical);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('serves the JSON-lines protocol over stdio', async () => {
     const child = spawn('node', [CLI, 'serve'], { cwd: projectDir });
     const output = new OutputCollector(child);
@@ -198,6 +312,86 @@ describe('SDK artifact and patch safety', () => {
     }
   });
 
+  it('fixes and patches a project whose interop module was already missing, reporting the E602 alongside', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-fix-interop-'));
+    try {
+      const entry = path.join(dir, 'app.grhm');
+      fs.writeFileSync(entry, '(app a (use "./lib/missing.ts" (import helper)) (page "/" home (txt "x" :colr "#000")))');
+      const project = new GrhmProject({ root: dir, entry: 'app.grhm', outDir: 'gen' });
+      const fixed = project.applyFixes();
+      expect(fixed).toMatchObject({ ok: true, clean: false, conflict: false, changedFiles: ['app.grhm'] });
+      expect(fixed.applied.map((a) => a.code)).toEqual(['E102']);
+      expect(fixed.diagnostics.map((d) => d.code)).toEqual(['E602']);
+      expect(fixed.uncovered).toEqual([]);
+      expect(fs.readFileSync(entry, 'utf8')).toContain(':color "#000"');
+
+      let txtId = '';
+      walkLists(project.load().mergedNodes, (node) => {
+        if (opName(node) === 'txt') txtId = node.id;
+      });
+      const patched = project.applyPatch(`(patch :target ${txtId} (set color "#111"))`);
+      expect(patched.ok).toBe(true);
+      expect(patched.diagnostics.map((d) => d.code)).toContain('E602');
+      expect(fs.readFileSync(entry, 'utf8')).toContain(':color "#111"');
+
+      // A second missing module is introduced by the patch, so that one is still rejected.
+      let useId = '';
+      walkLists(project.load().mergedNodes, (node) => {
+        if (opName(node) === 'use') useId = node.id;
+      });
+      const before = fs.readFileSync(entry, 'utf8');
+      const introduced = project.applyPatch(`(patch :target ${useId} (replace (use "./lib/other.ts" (import helper))))`);
+      expect(introduced.ok).toBe(false);
+      expect(introduced.diagnostics.map((d) => d.code)).toEqual(['E503', 'E602']);
+      expect(fs.readFileSync(entry, 'utf8')).toBe(before);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to write through a symlinked source file as a structured rejection', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-fix-symlink-'));
+    try {
+      const broken = '(app a (page "/" home (txt "x" :colr "#000")))';
+      fs.mkdirSync(path.join(dir, 'real'));
+      fs.writeFileSync(path.join(dir, 'real', 'app.grhm'), broken);
+      fs.symlinkSync(path.join('real', 'app.grhm'), path.join(dir, 'app.grhm'));
+      fs.writeFileSync(path.join(dir, 'grhm.json'), JSON.stringify({ entry: 'app.grhm', outDir: 'gen' }));
+      const project = GrhmProject.fromCwd(dir);
+      expect(project.applyFixes({}, false)).toMatchObject({ ok: true, clean: true });
+
+      const written = project.applyFixes();
+      expect(written).toMatchObject({ ok: false, clean: false, conflict: false, applied: [] });
+      expect(written.diagnostics.map((d) => [d.code, d.received])).toEqual([['E503', 'app.grhm']]);
+      expect(written.diagnostics[0]?.message).toBe('Fix rejected: "app.grhm" is a symbolic link; edit its target file instead');
+
+      // Patch and format reach the same refusal (on a program they would otherwise change).
+      const valid = '(app a (page "/" home (txt "x" :color "#000")))';
+      fs.writeFileSync(path.join(dir, 'real', 'app.grhm'), valid);
+      let txtId = '';
+      walkLists(project.load().mergedNodes, (node) => {
+        if (opName(node) === 'txt') txtId = node.id;
+      });
+      const patched = project.applyPatch(`(patch :target ${txtId} (set color "#111"))`);
+      expect(patched).toMatchObject({ ok: false, conflict: false });
+      expect(patched.diagnostics.map((d) => d.code)).toEqual(['E503']);
+      expect(project.formatAll()).toMatchObject({ changed: [] });
+      expect(project.formatAll().diagnostics.map((d) => d.code)).toEqual(['E503']);
+      expect(fs.readFileSync(path.join(dir, 'real', 'app.grhm'), 'utf8')).toBe(valid);
+
+      fs.writeFileSync(path.join(dir, 'real', 'app.grhm'), broken);
+      const cli = spawnSync('node', [CLI, 'fix'], { cwd: dir, encoding: 'utf8' });
+      expect(cli.status).toBe(1);
+      expect(cli.stderr).toContain('symbolic link');
+      expect(cli.stdout).toContain('fix rejected');
+      expect(fs.readFileSync(path.join(dir, 'real', 'app.grhm'), 'utf8')).toBe(broken);
+      expect(fs.lstatSync(path.join(dir, 'app.grhm')).isSymbolicLink()).toBe(true);
+      expect(fs.readdirSync(dir).filter((f) => f.startsWith('.grhm-write'))).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('stages every cross-file patch before replacing any source file', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-patch-atomic-'));
     const locked = path.join(dir, 'locked');
@@ -219,6 +413,56 @@ describe('SDK artifact and patch safety', () => {
       expect(fs.readFileSync(path.join(locked, 'part.grhm'), 'utf8')).toBe(part);
     } finally {
       fs.chmodSync(locked, 0o755);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stages cross-file fixes before replacing any source file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-fix-atomic-'));
+    const locked = path.join(dir, 'locked');
+    fs.mkdirSync(locked);
+    const app = '(app a (include "locked/part.grhm") (page "/" home (chip)))';
+    const part = '(component chip (txt "x" :colr "#fff"))';
+    fs.writeFileSync(path.join(dir, 'app.grhm'), app);
+    fs.writeFileSync(path.join(locked, 'part.grhm'), part);
+    const project = new GrhmProject({ root: dir, entry: 'app.grhm', outDir: 'gen' });
+    try {
+      const preview = project.applyFixes({}, false);
+      expect(preview).toMatchObject({ ok: true, clean: true, changedFiles: ['locked/part.grhm'] });
+      expect(preview.newSources?.get('locked/part.grhm')).toBe('(component chip (txt "x" :color "#fff"))');
+
+      fs.chmodSync(locked, 0o555);
+      expect(() => project.applyFixes()).toThrow();
+      expect(fs.readFileSync(path.join(dir, 'app.grhm'), 'utf8')).toBe(app);
+      expect(fs.readFileSync(path.join(locked, 'part.grhm'), 'utf8')).toBe(part);
+      expect(fs.readdirSync(dir).filter((f) => f.startsWith('.grhm-write'))).toEqual([]);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a fix when a project file changed on disk during validation', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-fix-cas-'));
+    const realRead = fs.readFileSync;
+    try {
+      const entry = path.join(dir, 'app.grhm');
+      const broken = '(app a (page "/" home (txt "x" :colr "#000")))';
+      fs.writeFileSync(entry, broken);
+      const project = new GrhmProject({ root: dir, entry: 'app.grhm', outDir: 'gen' });
+      // A concurrent writer as the commit's compare-and-swap observes it: the disk no longer holds the snapshot the fixes were validated against.
+      vi.spyOn(fs, 'readFileSync').mockImplementation((file, options) =>
+        typeof file === 'string' && path.basename(file) === 'app.grhm' && (new Error().stack ?? '').includes('commitSources')
+          ? '(app a (page "/" home (txt "changed")))'
+          : realRead(file, options));
+      const result = project.applyFixes();
+      vi.restoreAllMocks();
+      expect(result).toMatchObject({ ok: false, clean: false, conflict: true, passes: 0, applied: [] });
+      expect(result.diagnostics.map((d) => [d.code, d.message])).toEqual([['E504', 'Project changed during fix validation; retry against its current revision']]);
+      expect(fs.readFileSync(entry, 'utf8')).toBe(broken);
+      expect(fs.readdirSync(dir).filter((f) => f.startsWith('.grhm-write'))).toEqual([]);
+    } finally {
+      vi.restoreAllMocks();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -451,6 +695,162 @@ describe('CLI scaffold and test flags', () => {
     expect(version.status).toBe(0);
     expect(JSON.parse(version.stdout)).toEqual({ schema: 1, ok: true, name: 'grhm', version: '0.2.0' });
   });
+
+  it('explains a diagnostic code from the CLI and suggests the nearest known code', () => {
+    type Explained = { schema: number; ok: boolean; code: string; doc: string; repairs: { name: string; code: string; note: string; broken: string; fixed: string; fix?: string }[] };
+    const explained = spawnSync('node', [CLI, 'codes', 'E111', '--json'], { cwd: projectDir, encoding: 'utf8' });
+    expect(explained.status).toBe(0);
+    const result = JSON.parse(explained.stdout) as Explained;
+    expect(result).toMatchObject({ schema: 1, ok: true, code: 'E111', doc: CODE_DOCS['E111'] });
+    expect(result.repairs.length).toBeGreaterThan(0);
+    for (const repair of result.repairs) {
+      expect(repair).toMatchObject({ code: 'E111', name: expect.any(String), note: expect.any(String), broken: expect.any(String), fixed: expect.any(String) });
+    }
+    expect(result.repairs.some((r) => r.fix === 'safe')).toBe(true);
+
+    const human = spawnSync('node', [CLI, 'codes', 'e111'], { cwd: projectDir, encoding: 'utf8' });
+    expect(human.status).toBe(0);
+    expect(human.stdout.startsWith(`E111  ${CODE_DOCS['E111']}\n`)).toBe(true);
+    const first = result.repairs[0];
+    expect(human.stdout).toContain(`\n  ${first?.name}\n  ${first?.note}\n  broken: ${first?.broken}\n  fixed: ${first?.fixed}\n`);
+    expect(human.stdout).toContain('\n  fix: safe\n');
+
+    const unknown = spawnSync('node', [CLI, 'codes', 'E1111'], { cwd: projectDir, encoding: 'utf8' });
+    expect(unknown.status).toBe(1);
+    expect(unknown.stdout).toBe('');
+    expect(unknown.stderr).toBe('unknown code E1111; did you mean E111?\n');
+    const unknownJson = spawnSync('node', [CLI, 'codes', 'E1111', '--json'], { cwd: projectDir, encoding: 'utf8' });
+    expect(unknownJson.status).toBe(1);
+    expect(JSON.parse(unknownJson.stdout)).toEqual({ schema: 1, ok: false, code: 'E1111', suggestions: ['E111'] });
+    const nothingNear = spawnSync('node', [CLI, 'codes', 'bogus'], { cwd: projectDir, encoding: 'utf8' });
+    expect(nothingNear.status).toBe(1);
+    expect(nothingNear.stderr).toBe('unknown code bogus\n');
+    const long = spawnSync('node', [CLI, 'codes', 'E' + '1'.repeat(40)], { cwd: projectDir, encoding: 'utf8' });
+    expect(long.status).toBe(1);
+    expect(long.stderr).toBe('unknown code E111111111111111…\n');
+
+    // Too many arguments is a usage error, like every other command's.
+    const usage = spawnSync('node', [CLI, 'codes', 'E111', 'E112'], { cwd: projectDir, encoding: 'utf8' });
+    expect(usage.status).toBe(2);
+    expect(usage.stdout).toBe('');
+    expect(usage.stderr).toBe('usage: grhm codes [CODE] [--json]\n');
+    const usageJson = spawnSync('node', [CLI, 'codes', 'E111', 'E112', '--json'], { cwd: projectDir, encoding: 'utf8' });
+    expect(usageJson.status).toBe(2);
+    expect(usageJson.stdout).toBe('');
+  });
+
+  it('advertises safe fixes from check and applies them with grhm fix', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-fix-cli-'));
+    try {
+      const entry = path.join(dir, 'app.grhm');
+      const broken = '(app a (page "/" home (cardd (txt "Hi" :colr "#111"))))';
+      const repaired = '(app a (page "/" home (card (txt "Hi" :color "#111"))))';
+      fs.writeFileSync(entry, broken);
+      fs.writeFileSync(path.join(dir, 'grhm.json'), JSON.stringify({ entry: 'app.grhm', outDir: 'gen' }));
+
+      const check = spawnSync('node', [CLI, 'check'], { cwd: dir, encoding: 'utf8' });
+      expect(check.status).toBe(1);
+      expect(check.stdout).toContain('1 safe fix(es) available: grhm fix');
+
+      const usage = spawnSync('node', [CLI, 'fix', '--level', 'bogus'], { cwd: dir, encoding: 'utf8' });
+      expect(usage.status).toBe(2);
+      expect(usage.stderr).toContain('usage: grhm fix');
+
+      const dry = spawnSync('node', [CLI, 'fix', '--dry-run', '--json'], { cwd: dir, encoding: 'utf8' });
+      expect(dry.status, dry.stdout + dry.stderr).toBe(0);
+      const previewed = JSON.parse(dry.stdout) as { applied: { code: string }[]; newSource?: unknown; newSources?: unknown };
+      expect(previewed).toMatchObject({ schema: 1, ok: true, clean: true, passes: 2, stopped: 'fixed-point', changedFiles: ['app.grhm'] });
+      expect(previewed.applied.map((a) => a.code)).toEqual(['E101', 'E102']);
+      // Nothing was written, so the dry run carries the text it would have written.
+      expect(previewed.newSource).toBe(repaired);
+      expect(previewed.newSources).toEqual({ 'app.grhm': repaired });
+      expect(fs.readFileSync(entry, 'utf8')).toBe(broken);
+
+      const conflict = spawnSync('node', [CLI, 'fix', '--revision', 'deadbeef'], { cwd: dir, encoding: 'utf8' });
+      expect(conflict.status).toBe(1);
+      expect(conflict.stdout).toContain('conflict; current revision');
+      expect(fs.readFileSync(entry, 'utf8')).toBe(broken);
+
+      const run = spawnSync('node', [CLI, 'fix', '--json'], { cwd: dir, encoding: 'utf8' });
+      expect(run.status, run.stdout + run.stderr).toBe(0);
+      const written = JSON.parse(run.stdout) as { applied: { code: string }[]; newSource?: unknown; newSources?: unknown };
+      expect(written).toMatchObject({ ok: true, clean: true, passes: 2, changedFiles: ['app.grhm'] });
+      expect(written.applied.map((a) => a.code)).toEqual(['E101', 'E102']);
+      // After a real write the files on disk are the source of truth.
+      expect(written.newSource).toBeUndefined();
+      expect(written.newSources).toBeUndefined();
+      expect(fs.readFileSync(entry, 'utf8')).toBe(repaired);
+      expect(fs.readdirSync(dir).filter((f) => f.startsWith('.grhm-write'))).toEqual([]);
+
+      fs.writeFileSync(entry, broken);
+      const human = spawnSync('node', [CLI, 'fix'], { cwd: dir, encoding: 'utf8' });
+      expect(human.status, human.stdout + human.stderr).toBe(0);
+      expect(human.stdout).toContain('fixed app.grhm:1:23 E101 Rename "cardd" to "card"');
+      expect(human.stdout).toContain('fixed app.grhm:1:39 E102 Replace ":colr" with ":color"');
+      expect(human.stdout).toContain('applied 2 fix(es) in 2 pass(es); 0 error(s) remain');
+      expect(fs.readFileSync(entry, 'utf8')).toBe(repaired);
+
+      const again = spawnSync('node', [CLI, 'fix', '--json'], { cwd: dir, encoding: 'utf8' });
+      expect(again.status).toBe(0);
+      expect(JSON.parse(again.stdout)).toMatchObject({ ok: true, clean: true, passes: 0, applied: [] });
+
+      // The footer counts fixes as `grhm fix` applies them: one repair offered by two diagnostics is one fix.
+      fs.writeFileSync(entry, '(app a (db (table t (id auto))) (state p "") (state q "") (page "/" home (file-input :label "P" :to p) (file-input :label "Q" :to q)))');
+      const shared = spawnSync('node', [CLI, 'check'], { cwd: dir, encoding: 'utf8' });
+      expect(shared.status).toBe(1);
+      expect(shared.stdout).toContain('1 safe fix(es) available: grhm fix');
+      const sharedFix = JSON.parse(spawnSync('node', [CLI, 'fix', '--dry-run', '--json'], { cwd: dir, encoding: 'utf8' }).stdout) as { applied: { title: string }[] };
+      expect(sharedFix.applied.map((a) => a.title)).toEqual(['Add (uploads) to app']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('selects fixes by id and code from the CLI, honours --no-format, and rejects malformed flags', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-fix-flags-'));
+    try {
+      const entry = path.join(dir, 'app.grhm');
+      const cascade = '(app a (page "/" home (cardd (txt "Hi" :colr "#111"))))';
+      fs.writeFileSync(entry, cascade);
+      fs.writeFileSync(path.join(dir, 'grhm.json'), JSON.stringify({ entry: 'app.grhm', outDir: 'gen' }));
+      const fix = (...args: string[]): { status: number | null; stdout: string; stderr: string } => spawnSync('node', [CLI, 'fix', ...args], { cwd: dir, encoding: 'utf8' });
+      type Report = { applied: { id: string; code: string }[] };
+      const checked = JSON.parse(spawnSync('node', [CLI, 'check', '--json'], { cwd: dir, encoding: 'utf8' }).stdout) as { diagnostics: { code: string; fixes?: { id: string }[] }[] };
+      const outer = checked.diagnostics.find((d) => d.code === 'E101')?.fixes?.[0]?.id ?? '';
+      expect(outer).toMatch(/^f[0-9a-f]{8}$/);
+
+      // --code alone cannot reach the E102 the unknown op masks; an explicit --fix id is exempt from the filter and unmasks it.
+      const byCode = fix('--dry-run', '--json', '--code', 'E102');
+      expect(byCode.status).toBe(1);
+      expect(JSON.parse(byCode.stdout)).toMatchObject({ ok: true, clean: false, passes: 0, applied: [] });
+      const byId = fix('--dry-run', '--json', '--code', 'E102', '--fix', outer);
+      expect(byId.status, byId.stdout + byId.stderr).toBe(0);
+      expect((JSON.parse(byId.stdout) as Report).applied.map((a) => [a.id === outer, a.code])).toEqual([[true, 'E101'], [false, 'E102']]);
+      const stale = fix('--fix', 'f00000000');
+      expect(stale.status).toBe(1);
+      expect(stale.stdout).toContain('conflict; current revision');
+
+      // A flag without its value, a value that is another flag, and an unknown flag are usage errors that write nothing.
+      for (const args of [['--fix'], ['--fix', '--dry-run'], ['--code'], ['--level'], ['--revision'], ['--bogus']]) {
+        const usage = fix(...args);
+        expect(usage.status, args.join(' ')).toBe(2);
+        expect(usage.stdout, args.join(' ')).toBe('');
+        expect(usage.stderr.startsWith('usage: grhm fix'), args.join(' ')).toBe(true);
+      }
+      expect(fs.readFileSync(entry, 'utf8')).toBe(cascade);
+
+      // --no-format keeps a canonical file minimally edited; the default re-canonicalizes it.
+      const canonical = '(app a\n  (db\n    (table t (id auto)))\n\n  (state photo "")\n\n  (page "/" home (file-input :label "Photo" :to photo)))\n';
+      fs.writeFileSync(entry, canonical);
+      expect(fix('--no-format').status).toBe(0);
+      expect(fs.readFileSync(entry, 'utf8')).toBe(canonical.replace('(app a\n', '(app a (uploads)\n'));
+      fs.writeFileSync(entry, canonical);
+      expect(fix().status).toBe(0);
+      expect(fs.readFileSync(entry, 'utf8')).toBe(canonical.replace('(app a\n', '(app a\n  (uploads)\n\n'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('grhm dev', () => {
@@ -497,8 +897,14 @@ describe('LSP', () => {
     return out;
   }
 
-  it('initializes, publishes diagnostics, and answers hover', async () => {
-    const child = spawn('node', [CLI, 'lsp'], { cwd: projectDir });
+  /** Spawns `grhm lsp` in a project directory and exposes framed sends plus a poll over the decoded replies. */
+  function startLsp(cwd = projectDir): {
+    child: ChildProcessWithoutNullStreams;
+    send: (message: Record<string, unknown>) => void;
+    waitFor: (predicate: (m: Record<string, unknown>) => boolean, timeoutMs?: number, after?: number) => Promise<Record<string, unknown>>;
+    received: () => number;
+  } {
+    const child = spawn('node', [CLI, 'lsp'], { cwd });
     let raw = Buffer.alloc(0);
     child.stdout.on('data', (chunk: Buffer) => {
       raw = Buffer.concat([raw, chunk]);
@@ -524,44 +930,49 @@ describe('LSP', () => {
         };
         poll();
       });
+    return { child, send: (message) => child.stdin.write(frame(message)), waitFor, received: () => messages(raw).length };
+  }
+
+  it('initializes, publishes diagnostics, and answers hover', async () => {
+    const { child, send, waitFor, received } = startLsp();
 
     try {
       const nullBody = 'null';
       child.stdin.write(`Content-Length: ${Buffer.byteLength(nullBody, 'utf8')}\r\n\r\n${nullBody}`);
-      child.stdin.write(frame({ id: 1, method: 'initialize', params: {} }));
+      send({ id: 1, method: 'initialize', params: {} });
       const init = await waitFor((m) => m['id'] === 1);
       const caps = (init['result'] as { capabilities: Record<string, unknown> }).capabilities;
       expect(caps['hoverProvider']).toBe(true);
 
       const uri = 'file://' + path.join(projectDir, 'app.grhm');
       const badSource = '(app hello (page "/" home (txt unknown-ref)))';
-      child.stdin.write(frame({ method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: 'grhm', version: 1, text: badSource } } }));
+      send({ method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: 'grhm', version: 1, text: badSource } } });
       const diags = await waitFor((m) => m['method'] === 'textDocument/publishDiagnostics');
       const list = (diags['params'] as { diagnostics: { code: string }[] }).diagnostics;
       expect(list.some((d) => d.code === 'E201')).toBe(true);
 
       // Hover over "txt" (offset of "txt" in the source, line 0).
       const character = badSource.indexOf('txt') + 1;
-      child.stdin.write(frame({ id: 2, method: 'textDocument/hover', params: { textDocument: { uri }, position: { line: 0, character } } }));
+      send({ id: 2, method: 'textDocument/hover', params: { textDocument: { uri }, position: { line: 0, character } } });
       const hover = await waitFor((m) => m['id'] === 2);
       const value = ((hover['result'] as { contents: { value: string } }).contents).value;
       expect(value).toContain('text');
 
       // References and rename over a state declaration.
       const goodSource = '(app hello (state n 0) (page "/" home (txt n) (btn "Up" (click (set n (+ n 1))))))';
-      child.stdin.write(frame({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 2 }, contentChanges: [{ text: goodSource }] } }));
+      send({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 2 }, contentChanges: [{ text: goodSource }] } });
       await waitFor(
         (m) =>
           m['method'] === 'textDocument/publishDiagnostics' &&
           ((m['params'] as { diagnostics: unknown[] }).diagnostics).length === 0,
       );
       const statePos = { line: 0, character: goodSource.indexOf('state n') + 6 };
-      child.stdin.write(frame({ id: 3, method: 'textDocument/references', params: { textDocument: { uri }, position: statePos, context: { includeDeclaration: true } } }));
+      send({ id: 3, method: 'textDocument/references', params: { textDocument: { uri }, position: statePos, context: { includeDeclaration: true } } });
       const refs = await waitFor((m) => m['id'] === 3);
       const locations = refs['result'] as { uri: string; range: { start: { character: number } } }[];
       expect(locations.length).toBe(4); // decl, txt, set target, + operand
 
-      child.stdin.write(frame({ id: 4, method: 'textDocument/rename', params: { textDocument: { uri }, position: statePos, newName: 'clicks' } }));
+      send({ id: 4, method: 'textDocument/rename', params: { textDocument: { uri }, position: statePos, newName: 'clicks' } });
       const rename = await waitFor((m) => m['id'] === 4);
       const changes = (rename['result'] as { changes: Record<string, { newText: string }[]> }).changes;
       const edits = Object.values(changes).flat();
@@ -574,8 +985,8 @@ describe('LSP', () => {
       const sharedUri = 'file://' + sharedPath;
       const sharedSource = '(component chip (txt n))';
       fs.writeFileSync(sharedPath, sharedSource);
-      let after = messages(raw).length;
-      child.stdin.write(frame({ method: 'textDocument/didOpen', params: { textDocument: { uri: sharedUri, languageId: 'grhm', version: 1, text: sharedSource } } }));
+      let after = received();
+      send({ method: 'textDocument/didOpen', params: { textDocument: { uri: sharedUri, languageId: 'grhm', version: 1, text: sharedSource } } });
       await waitFor(
         (m) => m['method'] === 'textDocument/publishDiagnostics' && (m['params'] as { uri: string }).uri === sharedUri,
         10_000,
@@ -583,8 +994,8 @@ describe('LSP', () => {
       );
 
       const withState = '(app hello (state n 0) (include "shared.grhm") (page "/" home (chip)))';
-      after = messages(raw).length;
-      child.stdin.write(frame({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 3 }, contentChanges: [{ text: withState }] } }));
+      after = received();
+      send({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 3 }, contentChanges: [{ text: withState }] } });
       await waitFor(
         (m) =>
           m['method'] === 'textDocument/publishDiagnostics' &&
@@ -595,8 +1006,8 @@ describe('LSP', () => {
       );
 
       const withoutState = '(app hello (include "shared.grhm") (page "/" home (chip)))';
-      after = messages(raw).length;
-      child.stdin.write(frame({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 4 }, contentChanges: [{ text: withoutState }] } }));
+      after = received();
+      send({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 4 }, contentChanges: [{ text: withoutState }] } });
       const crossFile = await waitFor(
         (m) =>
           m['method'] === 'textDocument/publishDiagnostics' &&
@@ -610,20 +1021,114 @@ describe('LSP', () => {
       const specialPath = path.join(projectDir, 'part#one.grhm');
       fs.writeFileSync(specialPath, '(component special-chip (txt "special"))');
       const specialSource = '(app hello (include "part#one.grhm") (page "/" home (special-chip)))';
-      after = messages(raw).length;
-      child.stdin.write(frame({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 5 }, contentChanges: [{ text: specialSource }] } }));
+      after = received();
+      send({ method: 'textDocument/didChange', params: { textDocument: { uri, version: 5 }, contentChanges: [{ text: specialSource }] } });
       await waitFor(
         (m) => m['method'] === 'textDocument/publishDiagnostics' && (m['params'] as { uri: string; diagnostics: unknown[] }).uri === uri && (m['params'] as { diagnostics: unknown[] }).diagnostics.length === 0,
         10_000,
         after,
       );
-      child.stdin.write(frame({ id: 5, method: 'textDocument/definition', params: { textDocument: { uri }, position: { line: 0, character: specialSource.lastIndexOf('special-chip') + 2 } } }));
+      send({ id: 5, method: 'textDocument/definition', params: { textDocument: { uri }, position: { line: 0, character: specialSource.lastIndexOf('special-chip') + 2 } } });
       const definition = await waitFor((m) => m['id'] === 5);
       const definitionUri = (definition['result'] as { uri: string }).uri;
       expect(definitionUri).toContain('part%23one.grhm');
       expect(fs.realpathSync(fileURLToPath(definitionUri))).toBe(fs.realpathSync(specialPath));
     } finally {
       child.kill();
+    }
+  }, 30_000);
+
+  it('offers diagnostic fixes as quick fixes with exact ranges', async () => {
+    const { child, send, waitFor } = startLsp();
+    type Action = { title: string; kind: string; isPreferred: boolean; edit: { changes: Record<string, { range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }[]> } };
+    try {
+      send({ id: 1, method: 'initialize', params: {} });
+      await waitFor((m) => m['id'] === 1);
+      const uri = 'file://' + path.join(projectDir, 'app.grhm');
+      const source = '(app hello (state count 0) (page "/" home (cardd (txt "x")) (txt cont.length) (link (txt "b"))))';
+      send({ method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: 'grhm', version: 1, text: source } } });
+      await waitFor((m) => m['method'] === 'textDocument/publishDiagnostics');
+      const whole = { start: { line: 0, character: 0 }, end: { line: 0, character: source.length } };
+      send({ id: 2, method: 'textDocument/codeAction', params: { textDocument: { uri }, range: whole, context: { diagnostics: [] } } });
+      const actions = (await waitFor((m) => m['id'] === 2))['result'] as Action[];
+      const action = (title: string): Action => {
+        const found = actions.find((a) => a.title === title);
+        if (found === undefined) throw new Error(`missing action ${title} in ${JSON.stringify(actions.map((a) => a.title))}`);
+        return found;
+      };
+      const only = (a: Action): { range: Action['edit']['changes'][string][number]['range']; newText: string } => {
+        const edits = a.edit.changes[uri] ?? [];
+        expect(Object.keys(a.edit.changes)).toEqual([uri]);
+        expect(edits).toHaveLength(1);
+        const edit = edits[0];
+        if (edit === undefined) throw new Error('no edit');
+        return edit;
+      };
+      expect(actions.every((a) => a.kind === 'quickfix')).toBe(true);
+
+      // E101: only the head identifier of (cardd ...) is renamed.
+      const rename = action('Rename "cardd" to "card"');
+      expect(rename.isPreferred).toBe(true);
+      const cardd = source.indexOf('cardd');
+      expect(only(rename)).toEqual({ range: { start: { line: 0, character: cardd }, end: { line: 0, character: cardd + 5 } }, newText: 'card' });
+
+      // E201: only the head segment of the dotted identifier is replaced.
+      const replace = action('Replace "cont" with "count"');
+      expect(replace.isPreferred).toBe(true);
+      const cont = source.indexOf('cont.length');
+      expect(only(replace)).toEqual({ range: { start: { line: 0, character: cont }, end: { line: 0, character: cont + 4 } }, newText: 'count' });
+
+      // E106: a placeholder is offered but never preferred.
+      const to = action('Add :to "" (fill in)');
+      expect(to.isPreferred).toBe(false);
+      expect(only(to).newText).toBe(' :to ""');
+
+      // The client's `only` filter is honoured.
+      send({ id: 3, method: 'textDocument/codeAction', params: { textDocument: { uri }, range: whole, context: { diagnostics: [], only: ['refactor'] } } });
+      expect((await waitFor((m) => m['id'] === 3))['result']).toEqual([]);
+      send({ id: 4, method: 'textDocument/codeAction', params: { textDocument: { uri }, range: whole, context: { diagnostics: [], only: ['quickfix'] } } });
+      expect(((await waitFor((m) => m['id'] === 4))['result'] as Action[]).length).toBe(actions.length);
+    } finally {
+      child.kill();
+    }
+  }, 30_000);
+
+  it('resolves quick-fix edits that land in another project file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-lsp-crossfile-'));
+    const app = '(app a (include "shared.grhm") (db (table t (id auto))) (state photo "") (page "/" home (chip)))';
+    const shared = '(component chip (file-input :label "Photo" :to photo) (txt "x" :colr "#fff"))';
+    fs.writeFileSync(path.join(dir, 'grhm.json'), JSON.stringify({ entry: 'app.grhm', outDir: 'gen' }));
+    fs.writeFileSync(path.join(dir, 'app.grhm'), app);
+    fs.writeFileSync(path.join(dir, 'shared.grhm'), shared);
+    const { child, send, waitFor } = startLsp(dir);
+    type Action = { title: string; isPreferred: boolean; edit: { changes: Record<string, { range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }[]> } };
+    try {
+      send({ id: 1, method: 'initialize', params: {} });
+      await waitFor((m) => m['id'] === 1);
+      const appUri = pathToFileURL(path.join(dir, 'app.grhm')).href;
+      const sharedUri = pathToFileURL(path.join(dir, 'shared.grhm')).href;
+      send({ method: 'textDocument/didOpen', params: { textDocument: { uri: appUri, languageId: 'grhm', version: 1, text: app } } });
+      send({ method: 'textDocument/didOpen', params: { textDocument: { uri: sharedUri, languageId: 'grhm', version: 1, text: shared } } });
+      const published = await waitFor((m) => m['method'] === 'textDocument/publishDiagnostics' && (m['params'] as { uri: string }).uri === sharedUri);
+      expect((published['params'] as { diagnostics: { code: string }[] }).diagnostics.map((d) => d.code).sort()).toEqual(['E102', 'E818']);
+      send({ id: 2, method: 'textDocument/codeAction', params: { textDocument: { uri: sharedUri }, range: { start: { line: 0, character: 0 }, end: { line: 0, character: shared.length } }, context: { diagnostics: [] } } });
+      const actions = (await waitFor((m) => m['id'] === 2))['result'] as Action[];
+      const action = (title: string): Action => {
+        const found = actions.find((a) => a.title === title);
+        if (found === undefined) throw new Error(`missing action ${title} in ${JSON.stringify(actions.map((a) => a.title))}`);
+        return found;
+      };
+      expect(actions).toHaveLength(2);
+      // The E818 repair edits app.grhm, which the request did not ask about: its offsets are converted against that file's own text.
+      const uploads = action('Add (uploads) to app');
+      expect(uploads.isPreferred).toBe(true);
+      expect(uploads.edit.changes).toEqual({ [appUri]: [{ range: { start: { line: 0, character: 6 }, end: { line: 0, character: 6 } }, newText: ' (uploads)' }] });
+      const color = action('Replace ":colr" with ":color"');
+      expect(Object.keys(color.edit.changes)).toEqual([sharedUri]);
+      expect(color.edit.changes[sharedUri]?.[0]?.range.start.character).toBe(shared.indexOf(':colr'));
+    } finally {
+      child.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
 });

@@ -62,7 +62,8 @@ function escapeString(value: string): string {
   return out + '"';
 }
 
-function renderInline(e: SExpr): string {
+/** One-line rendering of a node; the checker quotes expressions in suggestions through it so hints read as canonical source. */
+export function renderInline(e: SExpr): string {
   switch (e.kind) {
     case 'string':
       return escapeString(e.value);

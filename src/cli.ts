@@ -2,9 +2,9 @@
 /**
  * The `grhm` CLI (PRD FR-11).
  *
- * Commands: new, check, fmt, build, dev, test, ast, inspect, patch, serve,
- * lsp, reference, codes. Every command supports --json with a versioned
- * machine-readable result.
+ * Commands: new, check, fmt, build, dev, test, ast, inspect, patch, fix,
+ * serve, lsp, reference, codes [CODE]. Every command supports --json with a
+ * versioned machine-readable result.
  *
  * Exit codes: 0 success, 1 validation failure, 2 build/config failure,
  * 3 internal tool failure.
@@ -17,13 +17,15 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
-import { CODE_DOCS, Diagnostic, formatHuman, hasErrors } from './diagnostics.js';
+import { CODE_DOCS, Diagnostic, formatHuman, hasErrors, preferredFix } from './diagnostics.js';
 import { EvalContext, EvalError, contextFromApp, evalExpr, formatValue } from './eval.js';
+import { FixRequest, candidateKey, isFixLevel } from './fix.js';
 import { NameStyle } from './format.js';
 import { runLsp } from './lsp.js';
 import { parse } from './parser.js';
 import { generateReference, referenceTokenEstimate } from './reference.js';
-import { runServer } from './server.js';
+import { displayCode, explainCode, nearestCodes } from './repairs.js';
+import { plainSources, runServer } from './server.js';
 import { GrhmProject } from './sdk.js';
 import { playwrightConfig } from './testgen.js';
 import { VERSION } from './version.js';
@@ -42,11 +44,12 @@ import {
   projectPackageJson,
 } from './scaffold.js';
 
-function printDiagnostics(project: GrhmProject, diags: Diagnostic[]): void {
+/** Code frames come from `sources` (text not yet on disk, as in a dry run) before the files themselves. */
+function printDiagnostics(project: GrhmProject, diags: Diagnostic[], sources?: Map<string, string>): void {
   for (const d of diags) {
     const file = d.span?.file ?? project.config.entry;
     const abs = path.join(project.config.root, file);
-    const source = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : undefined;
+    const source = sources?.get(file) ?? (fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : undefined);
     process.stderr.write(formatHuman(d, source, file) + '\n');
   }
 }
@@ -128,6 +131,12 @@ function cmdCheck(json: boolean): number {
   } else {
     printDiagnostics(project, summary.diagnostics);
     process.stdout.write(summary.ok ? `ok (revision ${summary.revision})\n` : 'check failed\n');
+    // Distinct fixes, as `grhm fix` counts them: one repair offered by several diagnostics is one fix.
+    const safe = new Set(summary.diagnostics.flatMap((d) => {
+      const fix = preferredFix(d);
+      return fix === undefined ? [] : [candidateKey(fix, project.config.entry)];
+    })).size;
+    if (safe > 0) process.stdout.write(`${safe} safe fix(es) available: grhm fix\n`);
   }
   return summary.ok ? 0 : 1;
 }
@@ -454,6 +463,70 @@ function cmdPatch(args: string[], json: boolean): number {
   return result.ok ? 0 : 1;
 }
 
+const FIX_USAGE = 'usage: grhm fix [--level safe|review|none] [--fix <id>]... [--code <CODE>]... [--revision <rev>] [--dry-run] [--no-format] [--json]\n';
+
+function cmdFix(args: string[], json: boolean): number {
+  const request: FixRequest = {};
+  const fix: string[] = [];
+  const codes: string[] = [];
+  let dryRun = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const flag = args[i];
+    switch (flag) {
+      case '--level':
+      case '--fix':
+      case '--code':
+      case '--revision': {
+        const value = args[i + 1];
+        if (value === undefined || value.startsWith('--')) {
+          process.stderr.write(FIX_USAGE);
+          return 2;
+        }
+        i += 1;
+        if (flag === '--level') {
+          if (!isFixLevel(value)) {
+            process.stderr.write(FIX_USAGE);
+            return 2;
+          }
+          request.level = value;
+        } else if (flag === '--fix') fix.push(value);
+        else if (flag === '--code') codes.push(value);
+        else request.revision = value;
+        break;
+      }
+      case '--dry-run':
+        dryRun = true;
+        break;
+      case '--no-format':
+        request.format = false;
+        break;
+      default:
+        process.stderr.write(FIX_USAGE);
+        return 2;
+    }
+  }
+  if (fix.length > 0) request.fix = fix;
+  if (codes.length > 0) request.codes = codes;
+  const project = GrhmProject.fromCwd(process.cwd());
+  const result = project.applyFixes(request, !dryRun);
+  if (json) {
+    // A dry run reports the text it would have written; after a real one the files on disk are the source of truth.
+    const { newSource: _omit, newSources: _omit2, ...rest } = result;
+    jsonOut({ schema: 1, ...(dryRun ? plainSources(result) : rest) });
+  } else {
+    for (const a of result.applied) process.stdout.write(`fixed ${a.file}:${a.line}:${a.col} ${a.code} ${a.title}\n`);
+    for (const s of result.skipped) process.stdout.write(`skipped ${s.code} ${s.id} ${s.title} (${s.reason})\n`);
+    printDiagnostics(project, result.diagnostics, result.newSources);
+    if (result.conflict) process.stdout.write(`conflict; current revision ${result.currentRevision ?? '?'}\n`);
+    else if (!result.ok) process.stdout.write('fix rejected\n');
+    else {
+      const errors = result.diagnostics.filter((d) => d.severity === 'error').length;
+      process.stdout.write(`${dryRun ? 'would apply' : 'applied'} ${result.applied.length} fix(es) in ${result.passes} pass(es); ${errors} error(s) remain\n`);
+    }
+  }
+  return result.ok && result.clean ? 0 : 1;
+}
+
 /** Fns/enums/i18n from the current project, if we are inside one. */
 function loadEvalContext(): EvalContext {
   try {
@@ -489,7 +562,7 @@ function cmdEval(rest: string[], json: boolean): number {
   }
   const result = evalSource(source, loadEvalContext());
   if (json) {
-    // result.text is already JSON for evaluable values ('#<fn>' for closures).
+    // result.text is already JSON for evaluable values, except '#<fn>' for closures and bare NaN/Infinity for non-finite numbers.
     jsonOut({ schema: 1, ok: result.ok, ...(result.ok ? { result: result.text } : { error: result.text }) });
     return result.ok ? 0 : 1;
   }
@@ -562,14 +635,40 @@ function cmdReference(json: boolean, full = false): number {
   return 0;
 }
 
-function cmdCodes(json: boolean): number {
-  if (json) {
-    jsonOut({ schema: 1, ok: true, codes: CODE_DOCS });
+/** `grhm codes` lists every code; `grhm codes <CODE>` explains one with its corpus repair transcripts. */
+function cmdCodes(rest: string[], json: boolean): number {
+  if (rest.length > 1) {
+    process.stderr.write('usage: grhm codes [CODE] [--json]\n');
+    return 2;
+  }
+  const code = rest[0];
+  if (code === undefined) {
+    if (json) {
+      jsonOut({ schema: 1, ok: true, codes: CODE_DOCS });
+      return 0;
+    }
+    for (const [name, doc] of Object.entries(CODE_DOCS)) {
+      process.stdout.write(`${name}  ${doc}\n`);
+    }
     return 0;
   }
-  for (const [code, doc] of Object.entries(CODE_DOCS)) {
-    process.stdout.write(`${code}  ${doc}\n`);
+  const explained = explainCode(code);
+  if (explained === undefined) {
+    const suggestions = nearestCodes(code);
+    if (json) jsonOut({ schema: 1, ok: false, code: displayCode(code), suggestions });
+    else process.stderr.write(`unknown code ${displayCode(code)}${suggestions.length > 0 ? `; did you mean ${suggestions.join(', ')}?` : ''}\n`);
+    return 1;
   }
+  if (json) {
+    jsonOut({ schema: 1, ok: true, ...explained });
+    return 0;
+  }
+  const lines = [`${explained.code}  ${explained.doc}`];
+  for (const repair of explained.repairs) {
+    lines.push('', `  ${repair.name}`, `  ${repair.note}`, `  broken: ${repair.broken}`, `  fixed: ${repair.fixed}`);
+    if (repair.fix !== undefined) lines.push(`  fix: ${repair.fix}`);
+  }
+  process.stdout.write(lines.join('\n') + '\n');
   return 0;
 }
 
@@ -593,10 +692,12 @@ commands:
   migrate [--check]   apply database migrations (or validate and roll back)
   db <operation>     backup, verify, or restore a SQLite snapshot
   patch <file>        apply a structural patch to the program
+  fix [--dry-run]     apply the safe fixes diagnostics carry; --level review,
+      --fix <id>, --code <CODE>, --revision <rev>, --no-format
   serve               long-lived compiler server (JSON lines on stdio)
   lsp                 language server (LSP over stdio)
   reference [--full]  print the compact reference (or detailed descriptions)
-  codes               list all diagnostic codes
+  codes [CODE]        list all diagnostic codes, or explain one with worked repairs
 
 options:
   --json              machine-readable output (schema-versioned)
@@ -637,7 +738,10 @@ export function main(argv: string[]): number {
         return outcome.status ?? 1;
       }
       case 'migrate': {
-        if (rest.length > 1 || (rest.length === 1 && rest[0] !== '--check')) throw new Error('Usage: grhm migrate [--check]');
+        if (rest.length > 1 || (rest.length === 1 && rest[0] !== '--check')) {
+          process.stderr.write('usage: grhm migrate [--check]\n');
+          return 2;
+        }
         const project = GrhmProject.fromCwd(process.cwd());
         const result = project.compile();
         if (hasErrors(result.diagnostics)) { printDiagnostics(project, result.diagnostics); return 1; }
@@ -650,6 +754,8 @@ export function main(argv: string[]): number {
       }
       case 'patch':
         return cmdPatch(rest, json);
+      case 'fix':
+        return cmdFix(rest, json);
       case 'serve':
         runServer(process.cwd());
         return -1;
@@ -659,7 +765,7 @@ export function main(argv: string[]): number {
       case 'reference':
         return cmdReference(json, rest.includes('--full'));
       case 'codes':
-        return cmdCodes(json);
+        return cmdCodes(rest, json);
       case 'version':
       case '--version':
         if (json) jsonOut({ schema: 1, ok: true, name: 'grhm', version: VERSION });

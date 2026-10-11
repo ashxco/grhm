@@ -8,6 +8,7 @@
       (if users.loading
         (txt "Loading...")
         (v :gap 8
-          (when users.error
+          (when
+            (not-null users.error)
             (txt "Error: " users.error :color "#991b1b"))
           (each u users.data (txt u.name)))))))

@@ -14,17 +14,25 @@ export function editDistance(a: string, b: string): number {
   return dp[b.length] ?? 0;
 }
 
-export function nearest(name: string, candidates: Iterable<string>, maxDistance = 2): string | undefined {
-  let best: string | undefined;
+/** Every candidate at the minimum edit distance (at most maxDistance), in iteration order; [] when none is close enough. */
+export function nearestAll(name: string, candidates: Iterable<string>, maxDistance = 2): string[] {
+  let hits: string[] = [];
   let bestDist = maxDistance + 1;
   for (const c of candidates) {
     const d = editDistance(name, c);
     if (d < bestDist) {
       bestDist = d;
-      best = c;
+      hits = [c];
+    } else if (d === bestDist && d <= maxDistance && !hits.includes(c)) {
+      hits.push(c);
     }
   }
-  return best;
+  return hits;
+}
+
+/** The first candidate at the minimum edit distance, if any is within maxDistance. */
+export function nearest(name: string, candidates: Iterable<string>, maxDistance = 2): string | undefined {
+  return nearestAll(name, candidates, maxDistance)[0];
 }
 
 // GRHM bindings are lowered to JavaScript identifiers. Keep the accepted

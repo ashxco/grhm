@@ -27,7 +27,13 @@ const cases: [string, unknown, string][] = [
   ['(url-encode "a/b")', 'a%2Fb', 'string'],
   ['(url-decode "a%2Fb")', 'a/b', 'string'],
   ['(date-iso 0)', '1970-01-01T00:00:00.000Z', 'string'],
-  ['(date-parse "1970-01-01T00:00:00.000Z")', 0, 'number'],
+  ['(date-parse "1970-01-01T00:00:00.000Z")', 0, 'number | null | undefined'],
+  ['(date-parse "nope")', null, 'number | null | undefined'],
+  ['(to-num "42")', 42, 'number | null | undefined'],
+  ['(to-num "abc")', null, 'number | null | undefined'],
+  ['(or-else (to-num "x") 0)', 0, 'number'],
+  ['(+ (or-else (to-num "1") 0) 1)', 2, 'number'],
+  ['(to-fixed 2 (or-else (to-num "x") 0))', '0.00', 'string'],
   ['(clamp 0 10 20)', 10, 'number'],
   ['(trunc -1.9)', -1, 'number'], ['(sign -0)', -0, 'number'],
   ['(sin 0)', 0, 'number'], ['(cos 0)', 1, 'number'], ['(tan 0)', 0, 'number'],
@@ -52,6 +58,8 @@ describe('extended standard library', () => {
     '(flat-map (lambda (x) (+ x 1)) (arr "bad"))',
     '(+ (json-parse "null") 1)',
     '(+ (url-encode "x") 1)', '(+ (has-key (obj) "x") 1)',
+    '(+ (to-num "1") 1)', '(clamp (date-parse "x") 0 1)', '(sign (to-num "x"))',
+    '(date-iso (date-parse "x"))', '(to-fixed 2 (to-num "x"))', '(to-fixed 2 "3.5")', '(to-fixed "2" 3.5)',
   ])('rejects invalid operands in %s', (source) => {
     const result = compile(`(app test (page "/" home (txt ${source})))`);
     expect(result.diagnostics.some((d) => d.code === 'E111')).toBe(true);

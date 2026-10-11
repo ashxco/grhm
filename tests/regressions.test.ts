@@ -20,9 +20,9 @@ describe('security and clean-code generation regressions', () => {
   });
 
   it('keeps boolean typing, SQL column needles, and route specificity aligned with output', () => {
-    const booleanResult = compile('(app a (state flag (and 1 2)) (page "/" home (txt flag)))');
+    const booleanResult = compile('(app a (state flag (and (!= 1 0) (!= 2 0))) (page "/" home (txt flag)))');
     expect(booleanResult.diagnostics).toEqual([]);
-    expect(booleanResult.files.get('state.ts')).toContain('createStore<boolean>(Boolean((1) && (2)))');
+    expect(booleanResult.files.get('state.ts')).toContain('createStore<boolean>(!!(((1 !== 0)) && ((2 !== 0))))');
 
     const whereResult = compile(
       '(app a (db (table t (id auto) (name string) (email string))) (api (get "/api/t" (select t :where (contains name email)))) (page "/" home (txt "x")))',

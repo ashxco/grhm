@@ -25,6 +25,9 @@ describe('structured value inference', () => {
     expect(typeOf('(first (arr 1 2))')).toBe('number | null');
     expect(typeOf('(first (arr))')).toBe('null');
     expect(typeOf('(or-else (first (arr 1 2)) 0)')).toBe('number');
+    expect(typeOf('(to-num "1")')).toBe('number | null');
+    expect(typeOf('(date-parse "x")')).toBe('number | null');
+    expect(typeOf('(or-else (to-num "1") 0)')).toBe('number');
     expect(typeOf('(arr 1 "two")')).toBe('list<number | string>');
     expect(typeOf('(not-null null)')).toBe('boolean');
   });
@@ -57,7 +60,7 @@ describe('structured value inference', () => {
 });
 
 describe('nullable checking and flow narrowing', () => {
-  it.each(['(+ (first (arr 1)) 1)', '(+ (first (arr)) 1)', '(+ (if true 1 null) 1)', '(+ (get (obj :name "Ada") "missing") 1)'])('rejects a known absent value in %s', (expression) => {
+  it.each(['(+ (first (arr 1)) 1)', '(+ (first (arr)) 1)', '(+ (if true 1 null) 1)', '(+ (get (obj :name "Ada") "missing") 1)', '(+ (to-num "1") 1)', '(date-iso (date-parse "x"))'])('rejects a known absent value in %s', (expression) => {
     const result = compile(wrap(expression));
     expect(result.diagnostics.some((diagnostic) => diagnostic.code === 'E111')).toBe(true);
     expect(result.files.size).toBe(0);
@@ -71,6 +74,9 @@ describe('nullable checking and flow narrowing', () => {
     '(let ((n (first (arr 1)))) (and (not-null n) (> n 0)))',
     '(let ((n (first (arr 1)))) (or (is-null n) (> n 0)))',
     '(+ (or-else (first (arr 1)) 0) 1)',
+    '(+ (or-else (to-num "1") 0) 1)',
+    '(let ((n (to-num "1"))) (if (not-null n) (+ n 1) 0))',
+    '(let ((ms (date-parse "1970-01-01T00:00:00.000Z"))) (if (is-null ms) "" (date-iso ms)))',
   ])('accepts guarded nullable arithmetic in %s', (expression) => {
     expect(errors(wrap(expression))).toEqual([]);
   });

@@ -13,7 +13,8 @@
         :text (trim body.text)
         :photo (or-else body.photo "")))
     (post "/api/notes/{id}/votes"
-      (insert votes :note-id (to-num id))))
+      (insert votes
+        :note-id (or-else (to-num id) (fail 400 "Invalid note id")))))
 
   (uploads :max-kb 2048 :public true :quota-mb 512 :user-quota-mb 50)
 

@@ -1,4 +1,6 @@
+import { analyze } from './analyze.js';
 import { ListNode, SExpr, isList, opName, splitList } from './ast.js';
+import { check } from './checker.js';
 import { compileNodes, CompileOptions, CompileResult, computeRevision } from './codegen/index.js';
 import { Diagnostic, hasErrors, makeDiag } from './diagnostics.js';
 import { format } from './format.js';
@@ -211,6 +213,14 @@ export function projectRevision(project: Project): string {
   if (project.files.length === 1) return computeRevision(format(project.files[0]!.nodes));
   const canonical = project.files.map((f) => `;; ${f.file}\n${format(f.nodes)}`).join('\n');
   return computeRevision(canonical);
+}
+
+/** Every diagnostic of a loaded project without generating code: parse and include errors, then analysis and checking of the merged view. */
+export function diagnoseProject(project: Project): Diagnostic[] {
+  const out = [...project.diagnostics];
+  const app = analyze(project.mergedNodes, out);
+  if (app !== undefined) check(app, out);
+  return out;
 }
 
 /** Compile a loaded project (analysis over the merged view). */

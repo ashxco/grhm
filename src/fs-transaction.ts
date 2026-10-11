@@ -7,6 +7,14 @@ interface Journal { version: 1; committed: boolean; entries: Entry[]; }
 const LOCK = '.grhm-write-lock';
 const JOURNAL = '.grhm-write-journal.json';
 
+/** A write refused by policy rather than failed by the filesystem; callers report it as a structured rejection. */
+export class WriteRefusedError extends Error {
+  constructor(readonly file: string, reason: string) {
+    super(`"${file}" ${reason}`);
+    this.name = 'WriteRefusedError';
+  }
+}
+
 function syncDirectory(root: string): void {
   const fd = fs.openSync(root, 'r');
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -23,7 +31,7 @@ function target(root: string, name: string): string {
   const realParent = fs.realpathSync(path.dirname(resolved));
   const parentRelative = path.relative(realRoot, realParent);
   if (parentRelative === '..' || parentRelative.startsWith('..' + path.sep) || path.isAbsolute(parentRelative)) throw new Error('Write journal escapes project');
-  if (fs.existsSync(resolved) && fs.lstatSync(resolved).isSymbolicLink()) throw new Error('Write transaction refuses symbolic links');
+  if (fs.existsSync(resolved) && fs.lstatSync(resolved).isSymbolicLink()) throw new WriteRefusedError(name, 'is a symbolic link; edit its target file instead');
   return resolved;
 }
 function saveJournal(root: string, journal: Journal): void {

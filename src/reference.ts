@@ -110,7 +110,7 @@ One (app name ...) per program, plus optional (tests ...). Comments: ; to end of
 Atoms: "strings", numbers, true/false/null, identifiers (kebab-case), :keywords.
 Keyword props follow the op: (vstack :pad 24 :gap 8 child...). Dotted access: user.name.
 Token refs: $primary reads (token primary ...). Route params {id} bind as strings.`);
-  if (!options.full) sections.push('Compact signatures below cover every operation. Run grhm reference --full for detailed operation descriptions; grhm codes explains diagnostics.');
+  if (!options.full) sections.push('Compact signatures below cover every operation. Run grhm reference --full for detailed operation descriptions; grhm codes <CODE> explains one diagnostic with worked repairs.');
 
   const byCategory = new Map<string, OpSchema[]>();
   for (const op of allOps()) {
@@ -156,6 +156,7 @@ Call: (name arg...). Pass as value: (map name xs).
 (lambda (x) expr) — anonymous function, usable wherever a function is expected.
 (let ((x e1) (y e2)) body) — sequential local bindings, an expression.
 (if cond then else) — in expression position, a value-producing conditional.
+Conditions (if/when/cond tests, and/or/not operands) must be boolean: test other values with (not-null x), (!= n 0), (> (count xs) 0).
 Example: (fn total (xs) (reduce (lambda (acc x) (+ acc (* x.price x.qty))) 0 xs))`);
 
   sections.push(`## server (db + api)

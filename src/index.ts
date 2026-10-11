@@ -2,6 +2,8 @@
 
 export * from './ast.js';
 export * from './diagnostics.js';
+export { makeFix, fixId, editAt, replaceSpan, renameHeadFix, replaceIdentSegment, keywordFix, tokenFix, literalFix, wrapFix, insertAfterFix, insertPropFix, appendChildFix, insertChildFix, placeholderLiteral, spellingFix, isSafeSpelling, fixesOf } from './fix-builders.js';
+export type { Spelling } from './fix-builders.js';
 export { parse } from './parser.js';
 export { format, projectNames } from './format.js';
 export type { NameStyle } from './format.js';
@@ -13,6 +15,8 @@ export { compile, compileNodes, generate, computeRevision } from './codegen/inde
 export type { CompileResult, CompileOptions } from './codegen/index.js';
 export { applyPatch, applyPatchToProject } from './patch.js';
 export type { PatchResult } from './patch.js';
+export { applyFixes, applyFixesToProject, applyTextEdits, isFixLevel, FIX_LEVELS } from './fix.js';
+export type { FixRequest, FixResult, AppliedFix, SkippedFix, FixLevel, FixStopReason, FixSkipReason } from './fix.js';
 export { loadProject, compileProject, projectRevision } from './project.js';
 export type { Project, ProjectFile, ReadFile } from './project.js';
 export { GrhmProject, loadConfig } from './sdk.js';
@@ -22,5 +26,7 @@ export { runLsp } from './lsp.js';
 export { symbolAt, resolveSymbol, resolveSymbolAt, findReferences, validNewName } from './references.js';
 export type { SymbolInfo, SymbolKind } from './references.js';
 export { generateReference, referenceTokenEstimate } from './reference.js';
+export { loadRepairs, explainCode, nearestCodes } from './repairs.js';
+export type { Repair, RepairFixLevel, CodeExplanation } from './repairs.js';
 export { genPlaywrightSpec, genVitestSpec, PLAYWRIGHT_CONFIG } from './testgen.js';
 export { lookupOp, allOpNames, allOps, STYLE_PROPS, MOTION_PROPS, EXPR_OPS, TEST_STEPS, BROWSER_GLOBALS } from './schema.js';

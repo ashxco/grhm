@@ -119,7 +119,7 @@
     (local photo-url "")
     (v :pad 32 :gap 16
       (heading "All products")
-      (when products.error
+      (when (not-null products.error)
         (txt "Failed to load: " products.error :color "#991b1b"))
       (txt "Under $50: " (cheap-names products.data))
       (txt "Subtotal: " (to-fixed 2 (subtotal products.data)))

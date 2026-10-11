@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { analyze, AppModel } from './analyze.js';
 import { ListNode, SExpr, Span, isList, opName, walkLists } from './ast.js';
-import { Diagnostic } from './diagnostics.js';
+import { Diagnostic, preferredFix } from './diagnostics.js';
 import { format } from './format.js';
 import { MAX_PROTOCOL_BYTES } from './limits.js';
 import { parse } from './parser.js';
@@ -53,6 +53,11 @@ function offsetAt(source: string, pos: Position): number {
 
 function rangeOf(source: string, span: Span): LspRange {
   return { start: positionAt(source, span.start), end: positionAt(source, span.end) };
+}
+
+/** Whether a code action kind passes the client's `context.only` filter (kinds are dot-separated hierarchies). */
+function kindRequested(kind: string, only: string[] | undefined): boolean {
+  return only === undefined || only.some((wanted) => wanted === '' || kind === wanted || kind.startsWith(wanted + '.'));
 }
 
 function toLspDiagnostic(d: Diagnostic, source: string): Record<string, unknown> {
@@ -164,7 +169,11 @@ export function runLsp(cwd: string): void {
     return path.relative(realRoot, real).split(path.sep).join('/');
   };
 
+  // A file the client has open keeps the URI it was opened under (which may
+  // spell a symlinked path differently from the project root), so edits and
+  // locations land in that buffer; any other file is addressed from the root.
   const relToUri = (rel: string): string => {
+    for (const uri of docs.keys()) if (uriToRel(uri) === rel) return uri;
     return pathToFileURL(path.join(project.config.root, rel)).href;
   };
 
@@ -282,21 +291,40 @@ export function runLsp(cwd: string): void {
     'textDocument/codeAction': (params) => {
       const doc = params['textDocument'] as { uri: string };
       const range = params['range'] as LspRange;
+      const context = params['context'] as { only?: string[] } | undefined;
+      if (!kindRequested('quickfix', context?.only)) return [];
       const source = docs.get(doc.uri) ?? '';
+      const rel = uriToRel(doc.uri);
       const start = offsetAt(source, range.start);
       const end = offsetAt(source, range.end);
       const actions: Record<string, unknown>[] = [];
       for (const d of lastDiags.get(doc.uri) ?? []) {
-        if (d.span === undefined || d.suggestions === undefined || d.suggestions.length === 0) continue;
+        if (d.span === undefined || d.fixes === undefined) continue;
         if (d.span.end < start || d.span.start > end) continue;
-        // Suggestions are replacement spellings for the flagged span
-        // (nearest-name matches, valid enum members, known routes, ...).
-        for (const suggestion of d.suggestions.slice(0, 3)) {
+        // `fixes` arrive most confident first, so the preferred (unique safe) one leads.
+        const preferred = preferredFix(d);
+        for (const fix of d.fixes) {
+          // Edit offsets index the text the diagnostics were computed from:
+          // this document's buffer, or another project file's overlay/disk text.
+          const changes: Record<string, { range: LspRange; newText: string }[]> = {};
+          let complete = true;
+          for (const edit of fix.edits) {
+            const editRel = edit.file ?? project.config.entry;
+            const text = editRel === rel ? source : project.readFile(editRel);
+            if (text === undefined) {
+              complete = false;
+              break;
+            }
+            const uri = editRel === rel ? doc.uri : relToUri(editRel);
+            (changes[uri] ??= []).push({ range: { start: positionAt(text, edit.start), end: positionAt(text, edit.end) }, newText: edit.text });
+          }
+          if (!complete) continue;
           actions.push({
-            title: `Replace with "${suggestion}"`,
+            title: fix.title,
             kind: 'quickfix',
             diagnostics: [toLspDiagnostic(d, source)],
-            edit: { changes: { [doc.uri]: [{ range: rangeOf(source, d.span), newText: suggestion }] } },
+            isPreferred: fix === preferred,
+            edit: { changes },
           });
         }
       }
