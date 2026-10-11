@@ -1,6 +1,8 @@
 import { CODE_DOCS, hasErrors } from './diagnostics.js';
+import { FixRequest, isFixLevel } from './fix.js';
 import { MAX_PROTOCOL_BYTES } from './limits.js';
 import { generateReference, referenceTokenEstimate } from './reference.js';
+import { displayCode, explainCode, nearestCodes } from './repairs.js';
 import { GrhmProject } from './sdk.js';
 import { VERSION } from './version.js';
 
@@ -19,6 +21,64 @@ interface Request {
   params?: Record<string, unknown>;
 }
 
+/** Maps do not survive JSON.stringify; source-changing results ship `newSources` as a plain object. */
+export function plainSources<T extends { newSources?: Map<string, string> }>(result: T): Omit<T, 'newSources'> & { newSources: Record<string, string> | undefined } {
+  const { newSources, ...rest } = result;
+  return { ...rest, newSources: newSources !== undefined ? Object.fromEntries(newSources) : undefined };
+}
+
+// Optional params are absent or exactly the documented type: a value of the
+// wrong type is an error envelope, never a coercion, so a malformed dry run
+// cannot become a write.
+
+function stringList(params: Record<string, unknown>, key: string): string[] | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((item): item is string => typeof item === 'string')) throw new Error(`"${key}" must be an array of strings`);
+  return value;
+}
+
+function optionalString(params: Record<string, unknown>, key: string): string | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new Error(`"${key}" must be a string`);
+  return value;
+}
+
+function optionalBoolean(params: Record<string, unknown>, key: string): boolean | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') throw new Error(`"${key}" must be a boolean`);
+  return value;
+}
+
+function optionalPositiveInteger(params: Record<string, unknown>, key: string): number | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) throw new Error(`"${key}" must be a positive integer`);
+  return value;
+}
+
+function fixRequestFrom(params: Record<string, unknown>): FixRequest {
+  const request: FixRequest = {};
+  const level = params['level'];
+  if (level !== undefined) {
+    if (!isFixLevel(level)) throw new Error('"level" must be one of none, safe, review');
+    request.level = level;
+  }
+  const fix = stringList(params, 'fix');
+  if (fix !== undefined) request.fix = fix;
+  const codes = stringList(params, 'codes');
+  if (codes !== undefined) request.codes = codes;
+  const revision = optionalString(params, 'revision');
+  if (revision !== undefined) request.revision = revision;
+  const maxPasses = optionalPositiveInteger(params, 'maxPasses');
+  if (maxPasses !== undefined) request.maxPasses = maxPasses;
+  const format = optionalBoolean(params, 'format');
+  if (format !== undefined) request.format = format;
+  return request;
+}
+
 export function handleRequest(project: GrhmProject, method: string, params: Record<string, unknown>): unknown {
   switch (method) {
     case 'version':
@@ -30,7 +90,7 @@ export function handleRequest(project: GrhmProject, method: string, params: Reco
     case 'compile': {
       const result = project.compile();
       const ok = !hasErrors(result.diagnostics);
-      const write = params['write'] !== false;
+      const write = optionalBoolean(params, 'write') ?? true;
       const artifacts = ok && write ? project.writeArtifacts(result.files) : [];
       return {
         ok,
@@ -48,21 +108,27 @@ export function handleRequest(project: GrhmProject, method: string, params: Reco
     }
     case 'patch': {
       const patchSource = String(params['patch'] ?? '');
-      const preview = params['preview'] === true;
-      const result = project.applyPatch(patchSource, !preview);
-      const { newSources, ...rest } = result;
-      return { ...rest, newSources: newSources !== undefined ? Object.fromEntries(newSources) : undefined };
+      const preview = optionalBoolean(params, 'preview') ?? false;
+      return plainSources(project.applyPatch(patchSource, !preview));
+    }
+    case 'fix': {
+      const preview = optionalBoolean(params, 'preview') ?? false;
+      return plainSources(project.applyFixes(fixRequestFrom(params), !preview));
     }
     case 'format': {
-      const checkOnly = params['check'] === true;
+      const checkOnly = optionalBoolean(params, 'check') ?? false;
       return project.formatAll('preserve', checkOnly);
     }
     case 'reference': {
-      const text = generateReference({ full: params['full'] === true });
+      const text = generateReference({ full: optionalBoolean(params, 'full') ?? false });
       return { text, tokenEstimate: referenceTokenEstimate(text) };
     }
-    case 'codes':
-      return { codes: CODE_DOCS };
+    case 'codes': {
+      if (params['code'] === undefined) return { codes: CODE_DOCS };
+      const code = String(params['code']);
+      const explained = explainCode(code);
+      return explained !== undefined ? { ok: true, ...explained } : { ok: false, code: displayCode(code), suggestions: nearestCodes(code) };
+    }
     default:
       throw new Error(`unknown method "${method}"`);
   }

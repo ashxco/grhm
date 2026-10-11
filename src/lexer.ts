@@ -118,6 +118,8 @@ export function lex(source: string, file?: string): LexResult {
               diagnostics.push(
                 makeDiag('E001', 'error', `Unknown string escape "\\${esc}"`, {
                   span: spanFrom(start, startLine, startCol),
+                  received: '\\' + esc,
+                  expected: '\\n, \\t, \\r, \\", or \\\\',
                 }),
               );
               value += esc;
@@ -130,6 +132,8 @@ export function lex(source: string, file?: string): LexResult {
         diagnostics.push(
           makeDiag('E001', 'error', 'Unterminated string literal', {
             span: spanFrom(start, startLine, startCol),
+            received: 'end of input',
+            expected: 'a closing "',
           }),
         );
       }
@@ -145,6 +149,8 @@ export function lex(source: string, file?: string): LexResult {
         diagnostics.push(
           makeDiag('E001', 'error', 'Expected a name after ":"', {
             span: spanFrom(start, startLine, startCol),
+            received: ':',
+            expected: 'a keyword such as :color',
           }),
         );
       }
@@ -183,6 +189,8 @@ export function lex(source: string, file?: string): LexResult {
     diagnostics.push(
       makeDiag('E001', 'error', `Unexpected character "${ch}"`, {
         span: { start, end: start + 1, line: startLine, col: startCol, ...(file !== undefined ? { file } : {}) },
+        received: ch,
+        expected: '"(", ")", a string, a number, an identifier, or a :keyword',
       }),
     );
     advance();

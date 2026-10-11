@@ -1,5 +1,6 @@
 import { ListNode, SExpr } from './ast.js';
 import { Diagnostic, makeDiag } from './diagnostics.js';
+import { editAt, fixesOf, makeFix, replaceSpan } from './fix-builders.js';
 import { assignIds } from './ids.js';
 import { lex, Token } from './lexer.js';
 
@@ -32,7 +33,15 @@ export function parse(source: string, file?: string): ParseResult {
       case 'eof':
         return undefined;
       case 'rparen':
-        diagnostics.push(makeDiag('E002', 'error', 'Unexpected ")"', { span: t.span }));
+        // Deleting the stray paren is a choice: it may instead mark a missing "(" earlier.
+        diagnostics.push(
+          makeDiag('E002', 'error', 'Unexpected ")"', {
+            span: t.span,
+            received: ')',
+            expected: 'a matching open parenthesis',
+            fixes: fixesOf(replaceSpan(t.span, '', 'Delete ")"', 'review')),
+          }),
+        );
         return undefined;
       case 'string':
         return { kind: 'string', value: t.text, span: t.span };
@@ -73,7 +82,15 @@ export function parse(source: string, file?: string): ParseResult {
             return list;
           }
           if (la.kind === 'eof') {
-            diagnostics.push(makeDiag('E003', 'error', 'Unclosed "("', { span: t.span }));
+            // Closing at end of input is a choice: the missing ")" may belong earlier.
+            diagnostics.push(
+              makeDiag('E003', 'error', 'Unclosed "("', {
+                span: t.span,
+                received: 'end of input',
+                expected: 'a closing parenthesis',
+                fixes: fixesOf(makeFix('Add ")" at end of input', 'review', [editAt(la.span, ')')])),
+              }),
+            );
             const list: ListNode = {
               kind: 'list',
               items,

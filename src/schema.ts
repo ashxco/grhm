@@ -731,7 +731,7 @@ const OPS: OpSchema[] = [
     styled: false,
     children: 'elements',
     positional: [{ name: 'cond', type: 'expr', required: true }],
-    doc: 'Conditional: (if cond then-element else-element?).',
+    doc: 'Conditional: (if cond then-element else-element?); cond must be boolean.',
   },
   {
     name: 'when',
@@ -741,7 +741,7 @@ const OPS: OpSchema[] = [
     styled: false,
     children: 'elements',
     positional: [{ name: 'cond', type: 'expr', required: true }],
-    doc: 'Render children only when the condition holds.',
+    doc: 'Render children only when the boolean condition holds.',
   },
   {
     name: 'slot',
@@ -917,6 +917,10 @@ export interface ExprOpSpec {
   variadicInput?: boolean;
   /** Scalar results shared by inference and schema consumers. */
   result?: 'number' | 'string' | 'boolean';
+  /** The scalar result may be null (absent); consumers must guard with or-else/not-null. */
+  nullable?: boolean;
+  /** A bad operand throws at runtime; the checker verifies literal operands and warns (W801) on dynamic ones outside attempt. */
+  throws?: boolean;
   doc?: string;
 }
 
@@ -947,8 +951,8 @@ export const EXPR_OPS: Record<string, ExprOpSpec> = {
   min: { minArity: 1, maxArity: undefined, js: undefined },
   max: { minArity: 1, maxArity: undefined, js: undefined },
   random: { minArity: 0, maxArity: 0, js: undefined, doc: '0..1' },
-  'to-fixed': { minArity: 2, maxArity: 2, js: undefined, doc: '(to-fixed digits x) -> string' },
-  'to-num': { minArity: 1, maxArity: 1, js: undefined },
+  'to-fixed': { inputs: ['number', 'number'], minArity: 2, maxArity: 2, js: undefined, doc: '(to-fixed digits x) -> string' },
+  'to-num': { inputs: ['any'], result: 'number', nullable: true, minArity: 1, maxArity: 1, js: undefined, doc: '(to-num x) -> number, or null when Number(x) is NaN (non-numeric strings, records)' },
   // Strings -----------------------------------------------------------------
   concat: { minArity: 1, maxArity: undefined, js: undefined, doc: 'string interpolation' },
   'to-str': { minArity: 1, maxArity: 1, js: undefined },
@@ -993,22 +997,22 @@ export const EXPR_OPS: Record<string, ExprOpSpec> = {
   merge: { inputs: ['record'], variadicInput: true, minArity: 1, maxArity: undefined, js: undefined, doc: '(merge record ...) -> new record; later own fields win' },
   'has-key': { inputs: ['record', 'any'], result: 'boolean', minArity: 2, maxArity: 2, js: undefined, doc: '(has-key record key) -> boolean; ignores inherited properties' },
   // Data interchange and general collection processing -----------------------
-  'json-parse': { inputs: ['string'], minArity: 1, maxArity: 1, js: undefined, doc: '(json-parse text) -> unknown JSON value; invalid JSON throws, catch with attempt' },
+  'json-parse': { inputs: ['string'], throws: true, minArity: 1, maxArity: 1, js: undefined, doc: '(json-parse text) -> unknown JSON value; invalid JSON throws; guard with attempt' },
   'json-stringify': { inputs: ['any'], result: 'string', minArity: 1, maxArity: 1, js: undefined, doc: '(json-stringify value) -> compact JSON string; an undefined top-level value becomes "null"' },
   'flat-map': { minArity: 2, maxArity: 2, js: undefined, fnArity: 1, doc: '(flat-map f xs) -> concatenated callback results, flattened one level' },
   flatten: { inputs: ['list'], minArity: 1, maxArity: 1, js: undefined, doc: '(flatten xs) -> new list flattened one level' },
   unique: { inputs: ['list'], minArity: 1, maxArity: 1, js: undefined, doc: '(unique xs) -> first occurrences; SameValueZero comparison, records compare by identity' },
   zip: { inputs: ['list', 'list'], minArity: 2, maxArity: 2, js: undefined, doc: '(zip xs ys) -> pairs, stopping at the shorter list' },
-  chunk: { inputs: ['number', 'list'], minArity: 2, maxArity: 2, js: undefined, doc: '(chunk positive-integer xs) -> consecutive lists, final chunk may be shorter; invalid size throws' },
+  chunk: { inputs: ['number', 'list'], throws: true, minArity: 2, maxArity: 2, js: undefined, doc: '(chunk positive-integer xs) -> consecutive lists, final chunk may be shorter; invalid size throws; guard with attempt' },
   'group-by': { minArity: 2, maxArity: 2, js: undefined, fnArity: 1, doc: '(group-by key-fn xs) -> record of lists keyed by String(key-fn item)' },
   // Text processing, URLs, UTC dates, and math --------------------------------
-  'regex-test': { inputs: ['string', 'string', 'string'], result: 'boolean', minArity: 2, maxArity: 3, js: undefined, doc: '(regex-test pattern text [flags]) -> boolean; invalid patterns/flags throw' },
-  'regex-find': { inputs: ['string', 'string', 'string'], minArity: 2, maxArity: 3, js: undefined, doc: '(regex-find pattern text [flags]) -> full match and capture strings, or null; unmatched captures are undefined' },
-  'regex-replace': { inputs: ['string', 'string', 'string', 'string'], result: 'string', minArity: 3, maxArity: 4, js: undefined, doc: '(regex-replace pattern replacement text [flags]) -> string; flags default to g' },
+  'regex-test': { inputs: ['string', 'string', 'string'], result: 'boolean', throws: true, minArity: 2, maxArity: 3, js: undefined, doc: '(regex-test pattern text [flags]) -> boolean; invalid pattern/flags throw; guard with attempt' },
+  'regex-find': { inputs: ['string', 'string', 'string'], throws: true, minArity: 2, maxArity: 3, js: undefined, doc: '(regex-find pattern text [flags]) -> full match and capture strings, or null; unmatched captures are undefined; invalid pattern/flags throw; guard with attempt' },
+  'regex-replace': { inputs: ['string', 'string', 'string', 'string'], result: 'string', throws: true, minArity: 3, maxArity: 4, js: undefined, doc: '(regex-replace pattern replacement text [flags]) -> string; flags default to g; invalid pattern/flags throw; guard with attempt' },
   'url-encode': { inputs: ['string'], result: 'string', minArity: 1, maxArity: 1, js: undefined, doc: '(url-encode text) -> percent-encoded URL component' },
-  'url-decode': { inputs: ['string'], result: 'string', minArity: 1, maxArity: 1, js: undefined, doc: '(url-decode text) -> decoded URL component; malformed escapes throw' },
-  'date-iso': { inputs: ['number'], result: 'string', minArity: 1, maxArity: 1, js: undefined, doc: '(date-iso epoch-ms) -> UTC ISO 8601 string; invalid date throws' },
-  'date-parse': { inputs: ['string'], result: 'number', minArity: 1, maxArity: 1, js: undefined, doc: '(date-parse text) -> epoch milliseconds or NaN; prefer ISO 8601 input' },
+  'url-decode': { inputs: ['string'], result: 'string', throws: true, minArity: 1, maxArity: 1, js: undefined, doc: '(url-decode text) -> decoded URL component; malformed escapes throw; guard with attempt' },
+  'date-iso': { inputs: ['number'], result: 'string', throws: true, minArity: 1, maxArity: 1, js: undefined, doc: '(date-iso epoch-ms) -> UTC ISO 8601 string; invalid date throws; guard with attempt' },
+  'date-parse': { inputs: ['string'], result: 'number', nullable: true, minArity: 1, maxArity: 1, js: undefined, doc: '(date-parse text) -> epoch milliseconds, or null when unparseable; prefer ISO 8601 input' },
   clamp: { inputs: ['number', 'number', 'number'], result: 'number', minArity: 3, maxArity: 3, js: undefined, doc: '(clamp minimum maximum value) -> bounded number' },
   trunc: { inputs: ['number'], result: 'number', minArity: 1, maxArity: 1, js: undefined, doc: 'truncate toward zero' },
   sign: { inputs: ['number'], result: 'number', minArity: 1, maxArity: 1, js: undefined, doc: 'numeric sign, preserving zero and NaN' },
@@ -1040,7 +1044,11 @@ export const EXPR_OPS: Record<string, ExprOpSpec> = {
 };
 
 /** Column types accepted in (table ...) declarations. */
-export const COLUMN_TYPES = new Set(['auto', 'string', 'number', 'boolean']);
+export type ColumnType = 'auto' | 'string' | 'number' | 'boolean';
+export const COLUMN_TYPES = new Set<string>(['auto', 'string', 'number', 'boolean'] satisfies ColumnType[]);
+
+/** Types a component may declare for its props: (props (label string) (on-pick action)). */
+export type PropTypeName = 'string' | 'number' | 'boolean' | 'list' | 'record' | 'action' | 'any';
 
 /** HTTP methods accepted in (api ...) route declarations. */
 export const API_METHODS = new Set(['get', 'post', 'put', 'delete']);
@@ -1060,6 +1068,9 @@ export const SERVER_OPS: Record<string, { doc: string }> = {
   fail: { doc: '(fail status "message") -> abort the handler with an HTTP error' },
   tx: { doc: '(tx expr) -> run expr inside a transaction, rolling back on failure' },
 };
+
+/** The action forms an event handler, component action prop, or (try ...) body may contain. */
+export const ACTION_OPS = ['set', 'nav', 'call', 'send', 'refresh', 'toast', 'try'];
 
 /** Props allowed on (select ...); :where lowers to a SQL WHERE clause. */
 export const SELECT_PROPS = new Set(['where', 'order', 'desc', 'limit', 'offset']);

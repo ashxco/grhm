@@ -34,6 +34,20 @@ export const agentExample = {
     "expected": "align align-md align-sm bg bg-md bg-sm border border-md border-sm color color-md color-sm delay dur ease enter gap gap-md gap-sm grow grow-md grow-sm h h-md h-sm hover id justify justify-md justify-sm margin margin-md margin-sm max-w max-w-md max-w-sm pad pad-md pad-sm radius radius-md radius-sm shadow shadow-md shadow-sm size size-md size-sm stagger w w-md w-sm weight weight-md weight-sm wrap wrap-md wrap-sm",
     "suggestions": [
       ":color"
+    ],
+    "fixes": [
+      {
+        "id": "f83575753",
+        "title": "Replace \":colr\" with \":color\"",
+        "confidence": "safe",
+        "edits": [
+          {
+            "start": 60,
+            "end": 65,
+            "text": ":color"
+          }
+        ]
+      }
     ]
   }
 };

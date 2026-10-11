@@ -13,6 +13,8 @@ function quote(value: string): string {
 /** Guaranteed boundaries complement the random distribution on every run. */
 export const BOUNDARY_EXPRESSIONS = [
   '(> 2 1)', '(>= 2 2)', '-0', '(+ 0.1 0.2)', '(+ 9007199254740991 1)', '(to-num "1e309")', '(to-num "-1e309")', '(to-num "NaN")',
+  '(to-num "")', '(to-num null)', '(to-num (obj))', '(to-num "abc")', '(to-num true)', '(+ 1 (to-num "x"))',
+  '(to-fixed 2 (or-else (to-num "x") 0))', '(date-parse "")', '(date-parse "nope")',
   '(+ (arr 1 2) 3)', '(+ (obj :x 1) 2)', '(+ true null)',
   '(first "abc")', '(reverse "é🙂")', '(take 2 "abcd")', '(sum "123")', '(contains null "x")',
   '(map 1 (arr))', '(filter null (arr))', '(reduce false 0 (arr))',
@@ -30,7 +32,7 @@ export const BOUNDARY_EXPRESSIONS = [
   '(merge (obj :a 1) (obj :a "last" :b 2))', '(has-key (obj) "toString")',
   '(json-parse "[1,null,true]")', '(json-stringify (obj :a (first (arr)) :b null))',
   '(flat-map (lambda (x) (arr x x)) (arr 1 2))', '(flatten (arr (arr 1 2) 3 null))',
-  '(unique (arr 0 -0 (to-num "NaN") (to-num "NaN") 1 1))',
+  '(unique (arr 0 -0 (/ 0 0) (/ 0 0) 1 1))',
   '(zip (arr 1 2 3) (arr "a" "b"))', '(chunk 2 (arr 1 2 3))',
   '(group-by (lambda (x) (to-str (mod x 2))) (arr 1 2 3))',
   '(regex-test "^a" "ABC" "i")', '(regex-find "(a)?(b)" "b")',
@@ -44,7 +46,7 @@ export const BOUNDARY_EXPRESSIONS = [
   '(chunk 0 (arr))', '(chunk 1.5 (arr 1))', '(chunk "2" (arr 1))',
   '(group-by 1 (arr))', '(group-by (lambda (x) "__proto__") (arr 1 2))', '(sort-by 1 (arr))',
   '(regex-test "[" "x")', '(regex-test "x" "x" "bad")', '(regex-find "x" "y")',
-  '(regex-replace "(a)" "$1$1" "abc")', '(url-decode "%")', '(date-iso (to-num "NaN"))',
+  '(regex-replace "(a)" "$1$1" "abc")', '(url-decode "%")', '(date-iso (/ 0 0))',
   '(let ((record (obj :x 1))) (unique (arr record record (obj :x 1))))',
 ];
 

@@ -5,7 +5,7 @@ import { walkLists } from '../dist/ast.js';
 
 /**
  * Performance measurement against the PRD 12.1 targets:
- * - full check+compile of a ~1,000-node program: P50 under 300 ms
+ * - full check+compile of a ~1,600-node program: P50 under 300 ms
  * - warm patch validation: P50 under 200 ms
  * Run `npm run build` first; this benchmarks the compiled dist/ output.
  */

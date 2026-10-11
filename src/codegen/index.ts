@@ -1,11 +1,12 @@
 import { runtimeSource } from './runtime-source.js';
-import { AppModel, ComponentModel, PageModel, PropTypeName, StateDecl } from '../analyze.js';
+import { AppModel, ComponentModel, PageModel, StateDecl } from '../analyze.js';
 import { SExpr, isList, opName, walkLists } from '../ast.js';
 import { check } from '../checker.js';
 import { analyze } from '../analyze.js';
 import { Diagnostic, hasErrors } from '../diagnostics.js';
 import { format } from '../format.js';
 import { parse } from '../parser.js';
+import { PropTypeName } from '../schema.js';
 import {
   Scope,
   componentInitializerScope,

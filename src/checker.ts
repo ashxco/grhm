@@ -1,9 +1,11 @@
 import { fieldErrors } from './runtime/contracts.js';
-import { ListNode, SExpr, isList, opName, splitList } from './ast.js';
-import { ApiMethod, ApiRouteDecl, AppModel, ComponentModel, PageModel, TableDecl } from './analyze.js';
+import { BooleanAtom, IdentAtom, ListNode, NullAtom, NumberAtom, SExpr, Span, StringAtom, isList, opName, splitList } from './ast.js';
+import { ApiMethod, ApiRouteDecl, AppModel, ComponentModel, PageModel, TableDecl, danglingKeywordDiag } from './analyze.js';
 import { checkTests } from './check-tests.js';
-import { Diagnostic, makeDiag } from './diagnostics.js';
-import { BROWSER_GLOBALS, EXPR_OPS, OpSchema, SELECT_PROPS, SEND_METHODS, SERVER_OPS, WHERE_OPS, allOpNames, allowedProps, lookupOp, propType } from './schema.js';
+import { Diagnostic, Fix, FixConfidence, makeDiag } from './diagnostics.js';
+import { NO_SPELLING, appendChildFix, fixesOf, insertAfterFix, insertChildFix, insertPropFix, keywordFix, literalFix, placeholderLiteral, renameHeadFix, replaceIdentSegment, replaceSpan, spellingFix, tokenFix, wrapFix } from './fix-builders.js';
+import { renderInline } from './format.js';
+import { ACTION_OPS, BROWSER_GLOBALS, EXPR_OPS, OpSchema, SELECT_PROPS, SEND_METHODS, SERVER_OPS, WHERE_OPS, allOpNames, allowedProps, lookupOp, propType } from './schema.js';
 import {
   NUMERIC_OPS,
   CallableInfo,
@@ -20,6 +22,7 @@ import {
   fieldInfo,
   fnScope,
   handlerScope,
+  inferCall,
   inferInfo,
   inferType,
   initializerInfo,
@@ -32,7 +35,7 @@ import {
   typeLabel,
   withoutNull,
 } from './typing.js';
-import { camelCase, isSafeCssLiteral, nearest, validBindingName } from './util.js';
+import { camelCase, isSafeCssLiteral, validBindingName } from './util.js';
 
 /**
  * Semantic checker (PRD FR-2). Validates element structure, properties,
@@ -58,9 +61,19 @@ interface Ctx {
   inTransaction?: boolean;
   /** Stop recursive call-site specialization while checking function bodies. */
   checkingCalls?: Set<CallableInfo>;
+  /** True inside a pure fn body or a test expect-eq expression, where a throw reaches the caller or fails the test rather than the UI (silences W801). */
+  inFn?: boolean;
+  /** True while checking the first operand of (attempt expr fallback), whose throw is the documented path. */
+  inAttempt?: boolean;
+  /** Declared fns whose bodies may throw to their caller (see throwingFunctions); a call outside attempt/fn/test is W801. */
+  throwingFns: Set<string>;
+  /** Literal verification per throwing-op node, so a body specialised at many call sites verifies its literals once. */
+  literalVerdicts: Map<ListNode, LiteralVerdict>;
 }
 
 const RESOURCE_FIELDS = new Set(['data', 'loading', 'error']);
+/** Special forms accepted in expression position beside EXPR_OPS (the rest of the `expected` list of E109). */
+const EXPR_FORMS = ['call', 'if', 'let', 'lambda'];
 const EVENT_OPS = new Set(['click', 'change', 'submit']);
 const DB_MUTATION_OPS = new Set(['insert', 'update', 'delete-row']);
 
@@ -68,13 +81,101 @@ function isCallable(info: TypeInfo): boolean {
   return !isNullable(info) && (info.type === 'unknown' || info.type === 'function' || (info.type === 'union' && (info.members ?? []).every(isCallable)));
 }
 
-function checkType(value: SExpr, wanted: TypeInfo, scope: Scope, ctx: Ctx, op: string, field?: string): void {
+/** The hints a type mismatch carries: display-only suggestions and machine-applicable fixes. */
+interface TypeRepair {
+  suggestions?: string[];
+  fixes?: Fix[];
+}
+
+function checkType(value: SExpr, wanted: TypeInfo, scope: Scope, ctx: Ctx, op: string, field?: string, repair: (received: TypeInfo) => TypeRepair = (received) => fallbackRepair(value, received, wanted)): void {
   const received = inferInfo(value, scope, ctx.app.tables);
   if (isAssignable(received, wanted)) return;
   ctx.out.push(makeDiag('E111', 'error', `"${op}" expects ${typeLabel(wanted)}, got ${typeLabel(received)}`, {
-    span: value.span, op, field, received: typeLabel(received), expected: typeLabel(wanted),
-    suggestions: isNullable(received) && !isNullable(wanted) ? ['guard with (not-null value) or use (or-else value fallback)'] : undefined,
+    span: value.span, op, field, received: typeLabel(received), expected: typeLabel(wanted), ...repair(received),
   }));
+}
+
+/** A nullable value where a non-nullable one is wanted: offer a fallback, as a fix only when the wanted type has a zero value. */
+function fallbackRepair(value: SExpr, received: TypeInfo, wanted: TypeInfo): TypeRepair {
+  if (!isNullable(received) || isNullable(wanted)) return {};
+  const fallback = wanted.type === 'string' || wanted.type === 'number' || wanted.type === 'boolean' || wanted.type === 'list' ? placeholderLiteral(wanted.type) : undefined;
+  return {
+    suggestions: ['guard with (not-null value) or use (or-else value fallback)'],
+    fixes: fallback === undefined ? undefined : fixesOf(wrapFix(value.span, '(or-else ', ` ${fallback})`, `Wrap in (or-else … ${fallback})`, 'review')),
+  };
+}
+
+/**
+ * A non-boolean condition lowers to JavaScript truthiness, where (if items …)
+ * is true for an empty list, so the repair spells out the test the author
+ * meant. It is `safe` where it preserves behaviour (a number against 0, a
+ * string against "", a nullable boolean defaulted to false, a nullable object
+ * guarded with not-null) and `review` where it changes it (an empty list) or
+ * where the exact spelling needs the operand twice (a nullable number or
+ * string: `(and (not-null x) (!= x 0))`), which a wrap cannot express.
+ */
+function conditionRepair(test: SExpr, received: TypeInfo): TypeRepair {
+  const wrap = (before: string, after: string, confidence: FixConfidence): TypeRepair =>
+    ({ fixes: fixesOf(wrapFix(test.span, before, after, `Wrap in ${before}…${after}`, confidence)) });
+  if (isNullable(received)) {
+    switch (received.type) {
+      case 'boolean':
+        return wrap('(or-else ', ' false)', 'safe');
+      case 'row':
+      case 'record':
+      case 'list':
+      case 'function':
+        return wrap('(not-null ', ')', 'safe');
+      case 'number':
+      case 'string': {
+        const text = renderInline(test);
+        return { suggestions: [`(and (not-null ${text}) (!= ${text} ${placeholderLiteral(received.type)}))`], ...wrap('(not-null ', ')', 'review') };
+      }
+      case 'unknown':
+      case 'union':
+        return wrap('(not-null ', ')', 'review');
+      case 'null':
+      case 'never':
+        return {};
+      default: {
+        const exhaustive: never = received.type;
+        throw new Error(`unhandled condition type: ${String(exhaustive)}`);
+      }
+    }
+  }
+  switch (received.type) {
+    case 'number':
+      return wrap('(!= ', ' 0)', 'safe');
+    case 'string':
+      return wrap('(!= ', ' "")', 'safe');
+    case 'list':
+      return wrap('(> (count ', ') 0)', 'review');
+    case 'boolean':
+    case 'row':
+    case 'record':
+    case 'function':
+    case 'union':
+    case 'null':
+    case 'never':
+    case 'unknown':
+      return {};
+    default: {
+      const exhaustive: never = received.type;
+      throw new Error(`unhandled condition type: ${String(exhaustive)}`);
+    }
+  }
+}
+
+/**
+ * The test of if/when/cond or an operand of and/or/not: checked as an
+ * expression, then held to boolean (unknown and never pass). A test whose own
+ * check already failed is not reported a second time.
+ */
+function checkCondition(test: SExpr, scope: Scope, ctx: Ctx, op: string): void {
+  const before = ctx.out.length;
+  checkExpr(test, scope, ctx);
+  for (let i = before; i < ctx.out.length; i += 1) if (ctx.out[i]?.severity === 'error') return;
+  checkType(test, { type: 'boolean' }, scope, ctx, op, undefined, (received) => conditionRepair(test, received));
 }
 
 /** Check all possible callable signatures and specialize unannotated bodies. */
@@ -97,13 +198,44 @@ function checkInvocation(info: TypeInfo, args: TypeInfo[], node: SExpr, op: stri
       span: node.span, nodeId: isList(node) ? node.id : undefined, op, field: fn.names[i], received: typeLabel(actual), expected: typeLabel(expected),
     }));
   });
+  if (fn.name !== undefined && ctx.throwingFns.has(fn.name) && ctx.inAttempt !== true && ctx.inFn !== true) warnThrowingCall(fn.name, info, args, node, op, ctx);
   if (fn.body === undefined || fn.scope === undefined || ctx.checkingCalls?.has(fn) === true) return;
   if (!fn.params.some((param, i) => param.type === 'unknown' && args[i]?.type !== 'unknown')) return;
   const inner = new Map(fn.scope);
   fn.names.forEach((name, i) => inner.set(name, bindingFromInfo('eachvar', fn.params[i]?.type === 'unknown' ? args[i] ?? { type: 'unknown' } : fn.params[i] ?? { type: 'unknown' })));
   const checkingCalls = new Set(ctx.checkingCalls);
   checkingCalls.add(fn);
-  checkExpr(fn.body, inner, { ...ctx, checkingCalls, inHandler: fn.pure === true ? false : ctx.inHandler });
+  checkExpr(fn.body, inner, { ...ctx, checkingCalls, inHandler: fn.pure === true ? false : ctx.inHandler, inFn: true });
+}
+
+/**
+ * A call of a fn whose body may throw (see throwingFunctions): the fallback is
+ * the caller's to choose, so W801 and its placeholder attempt wrap land on the
+ * call form. A bare fn reference handed to map/filter/call is invoked by that
+ * op, so it carries the warning without a wrap.
+ */
+function warnThrowingCall(name: string, info: TypeInfo, args: TypeInfo[], node: SExpr, op: string, ctx: Ctx): void {
+  const result = inferCall(info, args, ctx.app.tables);
+  const fallback = isNullable(result) ? 'null' : placeholderLiteral(result.type);
+  const message = op === name
+    ? `"${name}" may throw at runtime (its body has an unguarded throwing operation); wrap the call in (attempt expr fallback)`
+    : `"${op}" calls "${name}", which may throw at runtime; wrap in (attempt expr fallback)`;
+  ctx.out.push(
+    makeDiag('W801', 'warning', message, {
+      span: node.span,
+      nodeId: isList(node) ? node.id : undefined,
+      op,
+      expected: 'an enclosing (attempt expr fallback)',
+      fixes: isList(node) ? fixesOf(wrapFix(node.span, '(attempt ', ` ${fallback})`, `Wrap in (attempt … ${fallback}) (fill in)`, 'placeholder')) : undefined,
+    }),
+  );
+}
+
+/** `.n`, `n.`, `a..b`: a dotted path with an empty segment names nothing, so no spelling is attempted. */
+function malformedReference(ident: IdentAtom, extra: { nodeId?: string; op?: string; field?: string } = {}): Diagnostic {
+  return makeDiag('E201', 'error', `Malformed reference "${ident.name}": empty path segment`, {
+    span: ident.span, ...extra, received: ident.name, expected: 'a name or dotted path such as item.field',
+  });
 }
 
 const WHERE_ARITY: Record<string, { min: number; max?: number }> = {
@@ -239,12 +371,6 @@ function asyncInteropIsOuterResult(e: SExpr, app: AppModel, visiting = new Set<s
   return asyncInteropIsOuterResult(fn.body, app, inner);
 }
 
-function suggestionsFor(name: string, ctx: Ctx, extra: Iterable<string>): string[] {
-  const candidates = [...allOpNames(), ...ctx.app.components.keys(), ...extra];
-  const hit = nearest(name, candidates);
-  return hit !== undefined ? [hit] : [];
-}
-
 /** Does a route pattern match a concrete path string? */
 export function routeMatchesPath(pattern: string, path: string): boolean {
   const pSegs = pattern.split('/').filter((s) => s !== '');
@@ -258,12 +384,17 @@ function checkNavTarget(target: SExpr, scope: Scope, ctx: Ctx): void {
   if (target.kind === 'string') {
     const matched = ctx.app.pages.some((p) => routeMatchesPath(p.route, target.value));
     if (!matched) {
+      // Static routes only: a template with {params} is never the literal the author meant.
+      const routes = ctx.app.pages.map((p) => p.route);
+      const spelled = spellingFix(target.value, routes.filter((route) => !route.includes('{')), (hit) => hit, (hit, confidence) => literalFix(target, hit, confidence));
       ctx.out.push(
         makeDiag('E203', 'error', `No route matches "${target.value}"`, {
           span: target.span,
           op: 'nav',
           received: target.value,
-          expected: ctx.app.pages.map((p) => p.route).join(' | '),
+          expected: routes.join(' | '),
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
         }),
       );
     }
@@ -314,6 +445,7 @@ function checkNavTarget(target: SExpr, scope: Scope, ctx: Ctx): void {
     }
     for (const [name, entry] of parts.props) {
       if (!page.params.includes(name)) {
+        const spelled = spellingFix(name, page.params, (hit) => ':' + hit, (hit, confidence) => keywordFix(entry.keyword, hit, confidence));
         ctx.out.push(
           makeDiag('E206', 'error', `":${name}" is not a parameter of "${template.value}"`, {
             span: entry.keyword.span,
@@ -321,6 +453,8 @@ function checkNavTarget(target: SExpr, scope: Scope, ctx: Ctx): void {
             op: 'path',
             field: name,
             expected: page.params.map((p) => ':' + p).join(' ') || '(no parameters)',
+            suggestions: spelled.suggestions,
+            fixes: spelled.fixes,
           }),
         );
       }
@@ -352,16 +486,21 @@ export function checkExpr(e: SExpr, scope: Scope, ctx: Ctx): void {
       const head = segments[0] ?? e.name;
       // Token references like $primary are validated at the property site.
       if (head.startsWith('$')) return;
+      if (segments.includes('')) {
+        ctx.out.push(malformedReference(e));
+        return;
+      }
       const binding = scope.get(head);
       if (binding === undefined) {
+        // A bare enum name is never a value, so it is no candidate for one; a dotted head may still be an enum (statu.open).
+        const candidates = [...scope].filter(([, info]) => segments.length > 1 || info.kind !== 'enum').map(([name]) => name);
+        const spelled = spellingFix(head, candidates, (hit) => hit, (hit, confidence) => replaceIdentSegment(e, 0, hit, `Replace "${head}" with "${hit}"`, confidence));
         ctx.out.push(
           makeDiag('E201', 'error', `Unknown reference "${head}"`, {
             span: e.span,
             received: head,
-            suggestions: (() => {
-              const hit = nearest(head, scope.keys());
-              return hit !== undefined ? [hit] : [];
-            })(),
+            suggestions: spelled.suggestions,
+            fixes: spelled.fixes,
           }),
         );
         return;
@@ -371,16 +510,16 @@ export function checkExpr(e: SExpr, scope: Scope, ctx: Ctx): void {
         const member = segments[1];
         const values = binding.enumValues ?? [];
         if (member === undefined || segments.length !== 2 || !values.includes(member)) {
+          const spelled = member === undefined || segments.length !== 2
+            ? NO_SPELLING
+            : spellingFix(member, values, (hit) => `${head}.${hit}`, (hit, confidence) => replaceSpan(e.span, `${head}.${hit}`, `Replace "${e.name}" with "${head}.${hit}"`, confidence));
           ctx.out.push(
             makeDiag('E812', 'error', member === undefined ? `Enum "${head}" must be read as ${head}.member` : `Enum "${head}" has no member "${member}"`, {
               span: e.span,
               received: member ?? head,
               expected: values.map((v) => `${head}.${v}`).join(' | '),
-              suggestions: (() => {
-                if (member === undefined) return [];
-                const hit = nearest(member, values);
-                return hit !== undefined ? [`${head}.${hit}`] : [];
-              })(),
+              suggestions: spelled.suggestions,
+              fixes: spelled.fixes,
             }),
           );
         }
@@ -397,6 +536,7 @@ export function checkExpr(e: SExpr, scope: Scope, ctx: Ctx): void {
           ctx.out.push(makeDiag('E111', 'error', `"${parentName}" may be null; guard it before reading "${field}"`, {
             span: e.span, field, received: typeLabel(parent), expected: typeLabel(withoutNull(parent)),
             suggestions: [`(not-null ${parentName})`],
+            fixes: fixesOf(wrapFix(e.span, `(if (not-null ${parentName}) `, ' null)', `Wrap in (if (not-null ${parentName}) … null) (fill in)`, 'placeholder')),
           }));
           return;
         }
@@ -404,9 +544,9 @@ export function checkExpr(e: SExpr, scope: Scope, ctx: Ctx): void {
           const table = alternative.rowTable === undefined ? undefined : ctx.app.tables.get(alternative.rowTable);
           const names = alternative.type === 'row' && table !== undefined ? table.columns.map((column) => column.name) : alternative.fields === undefined ? undefined : [...alternative.fields.keys()];
           if (names !== undefined && !names.includes(field)) {
-            const hit = nearest(field, names);
+            const spelled = spellingFix(field, names, (hit) => hit, (hit, confidence) => replaceIdentSegment(e, i, hit, `Replace "${field}" with "${hit}"`, confidence));
             ctx.out.push(makeDiag(alternative.type === 'row' ? 'E803' : 'E808', 'error', `"${parentName}" has no declared field "${field}"`, {
-              span: e.span, field, received: field, expected: names.join(' | ') || '(no fields declared)', suggestions: hit === undefined ? [] : [hit],
+              span: e.span, field, received: field, expected: names.join(' | ') || '(no fields declared)', suggestions: spelled.suggestions, fixes: spelled.fixes,
             }));
             return;
           }
@@ -420,12 +560,15 @@ export function checkExpr(e: SExpr, scope: Scope, ctx: Ctx): void {
         const field = segments[1];
         if (field === undefined) return;
         if (!RESOURCE_FIELDS.has(field)) {
+          const spelled = spellingFix(field, RESOURCE_FIELDS, (hit) => `${head}.${hit}`, (hit, confidence) => replaceIdentSegment(e, 1, hit, `Replace "${field}" with "${hit}"`, confidence));
           ctx.out.push(
             makeDiag('E204', 'error', `Resource "${head}" has no field "${field}"`, {
               span: e.span,
               field,
               received: field,
               expected: 'data | loading | error',
+              suggestions: spelled.suggestions,
+              fixes: spelled.fixes,
             }),
           );
           return;
@@ -433,12 +576,19 @@ export function checkExpr(e: SExpr, scope: Scope, ctx: Ctx): void {
         if (field === 'data' && !ctx.guarded.has(head)) {
           const decl = ctx.app.resources.get(head);
           if (decl !== undefined && decl.defaultValue === undefined) {
+            // The default's type is the author's call (a list, a record, ...), so the stand-in is the untyped null.
+            const url = splitList(decl.node).rest[1];
             ctx.out.push(
               makeDiag(
                 'W301',
                 'warning',
                 `"${head}.data" is read without acknowledging loading/error states; guard with (if ${head}.loading ...) or declare :default`,
-                { span: e.span, field: 'data' },
+                {
+                  span: e.span,
+                  field: 'data',
+                  expected: `(if ${head}.loading ...) around the read or :default on (resource ${head} ...)`,
+                  fixes: fixesOf(insertPropFix(url, 'default', placeholderLiteral('unknown'), 'Add :default null (fill in)', 'placeholder')),
+                },
               ),
             );
           }
@@ -521,12 +671,17 @@ export function checkExpr(e: SExpr, scope: Scope, ctx: Ctx): void {
           for (const arg of e.items.slice(1)) checkExpr(arg, scope, ctx);
           return;
         }
+        // Candidates are what this position accepts: stdlib ops, the special forms, and the callable bindings in scope.
+        const callables = [...scope].filter(([, info]) => info.kind === 'fn' || info.kind === 'js').map(([name]) => name);
+        const spelled = spellingFix(op.name, [...Object.keys(EXPR_OPS), ...EXPR_FORMS, ...callables], (hit) => hit, (hit, confidence) => renameHeadFix(e, hit, confidence));
         ctx.out.push(
           makeDiag('E109', 'error', `"${op.name}" is not an expression operation`, {
             span: e.span,
             nodeId: e.id,
             op: op.name,
-            expected: Object.keys(EXPR_OPS).join(' ') + ' call if let lambda',
+            expected: [...Object.keys(EXPR_OPS), ...EXPR_FORMS].join(' '),
+            suggestions: spelled.suggestions,
+            fixes: spelled.fixes,
           }),
         );
         return;
@@ -568,12 +723,16 @@ export function checkExpr(e: SExpr, scope: Scope, ctx: Ctx): void {
         );
       }
       let argScope = scope;
-      for (const arg of args) {
-        checkExpr(arg, argScope, ctx);
+      for (const [i, arg] of args.entries()) {
+        // The first operand of attempt runs inside its try; a throw there is the documented path.
+        const argCtx = op.name === 'attempt' && i === 0 ? { ...ctx, inAttempt: true } : ctx;
+        if (op.name === 'and' || op.name === 'or' || op.name === 'not') checkCondition(arg, argScope, argCtx, op.name);
+        else checkExpr(arg, argScope, argCtx);
         if (op.name === 'and' || op.name === 'or') argScope = narrowScope(arg, argScope, op.name === 'and', ctx.app.tables);
       }
       if (NUMERIC_OPS.has(op.name)) for (const arg of args) checkType(arg, { type: 'number' }, scope, ctx, op.name);
       checkStdlibInputs(e, scope, ctx);
+      if (spec.throws === true) checkThrowingOp(e, scope, ctx);
       return;
     }
     default: {
@@ -597,7 +756,7 @@ function checkIfExpr(e: ListNode, scope: Scope, ctx: Ctx): void {
       }),
     );
   }
-  if (args[0] !== undefined) checkExpr(args[0], scope, ctx);
+  if (args[0] !== undefined) checkCondition(args[0], scope, ctx, 'if');
   for (let i = 1; i < args.length; i += 1) {
     const arg = args[i];
     if (arg !== undefined) checkExpr(arg, args[0] === undefined ? scope : narrowScope(args[0], scope, i === 1, ctx.app.tables), ctx);
@@ -745,18 +904,22 @@ function checkTemplate(e: ListNode, scope: Scope, ctx: Ctx): void {
           op: 'fmt',
           field: p,
           expected: placeholders.map((x) => ':' + x).join(' '),
+          fixes: fixesOf(insertPropFix(template, p, placeholderLiteral('string'), `Add :${p} (fill in)`, 'placeholder')),
         }),
       );
     }
   }
   for (const [name, entry] of parts.props) {
     if (!placeholders.includes(name)) {
+      const spelled = spellingFix(name, placeholders, (hit) => ':' + hit, (hit, confidence) => keywordFix(entry.keyword, hit, confidence));
       ctx.out.push(
         makeDiag('E206', 'error', `":${name}" does not appear in the template`, {
           span: entry.keyword.span,
           nodeId: e.id,
           op: 'fmt',
           field: name,
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
         }),
       );
     }
@@ -788,6 +951,7 @@ function checkT(e: ListNode, scope: Scope, ctx: Ctx): void {
   }
   const template = messages.get(key.name);
   if (template === undefined) {
+    const spelled = spellingFix(key.name, messages.keys(), (hit) => hit, (hit, confidence) => replaceSpan(key.span, hit, `Replace "${key.name}" with "${hit}"`, confidence));
     ctx.out.push(
       makeDiag('E814', 'error', `Unknown message key "${key.name}"`, {
         span: key.span,
@@ -795,10 +959,8 @@ function checkT(e: ListNode, scope: Scope, ctx: Ctx): void {
         op: 't',
         received: key.name,
         expected: [...messages.keys()].join(' | ') || '(no messages declared)',
-        suggestions: (() => {
-          const hit = nearest(key.name, messages.keys());
-          return hit !== undefined ? [hit] : [];
-        })(),
+        suggestions: spelled.suggestions,
+        fixes: spelled.fixes,
       }),
     );
     return;
@@ -813,18 +975,22 @@ function checkT(e: ListNode, scope: Scope, ctx: Ctx): void {
           op: 't',
           field: p,
           expected: placeholders.map((x) => ':' + x).join(' '),
+          fixes: fixesOf(insertPropFix(key, p, placeholderLiteral('string'), `Add :${p} (fill in)`, 'placeholder')),
         }),
       );
     }
   }
   for (const [name, entry] of parts.props) {
     if (!placeholders.includes(name)) {
+      const spelled = spellingFix(name, placeholders, (hit) => ':' + hit, (hit, confidence) => keywordFix(entry.keyword, hit, confidence));
       ctx.out.push(
         makeDiag('E206', 'error', `":${name}" does not appear in message "${key.name}"`, {
           span: entry.keyword.span,
           nodeId: e.id,
           op: 't',
           field: name,
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
         }),
       );
     }
@@ -856,7 +1022,7 @@ function checkCond(e: ListNode, scope: Scope, ctx: Ctx): void {
         ctx.out.push(makeDiag('E109', 'error', '(else ...) must be the last cond clause', { span: clause.span, nodeId: e.id, op: 'cond' }));
       }
     } else if (test !== undefined) {
-      checkExpr(test, inner, ctx);
+      checkCondition(test, inner, ctx, 'cond');
     }
     if (value !== undefined) checkExpr(value, test === undefined ? inner : narrowScope(test, inner, true, ctx.app.tables), ctx);
     if (test !== undefined) inner = narrowScope(test, inner, false, ctx.app.tables);
@@ -903,18 +1069,27 @@ function checkMatch(e: ListNode, scope: Scope, ctx: Ctx): void {
       if (pattern.kind === 'string') covered.push(pattern.value);
     } else if (pattern !== undefined && pattern.kind === 'ident') {
       // Enum member patterns: (match s (status.open "Open") ...).
-      const head = pattern.name.split('.')[0];
-      const member = pattern.name.split('.')[1];
+      const segments = pattern.name.split('.');
+      const [head, member] = segments;
       const decl = head !== undefined ? ctx.app.enums.get(head) : undefined;
-      if (decl !== undefined && member !== undefined && decl.values.includes(member)) {
+      if (decl !== undefined && member !== undefined && segments.length === 2 && decl.values.includes(member)) {
         covered.push(member);
       } else {
+        // A two-segment pattern is a near-miss of an enum read: re-spell the member against the enum, or the head against the enums.
+        const spelled = segments.length !== 2 || head === undefined || head === '' || member === undefined || member === ''
+          ? NO_SPELLING
+          : decl !== undefined
+            ? spellingFix(member, decl.values, (hit) => `${head}.${hit}`, (hit, confidence) => replaceSpan(pattern.span, `${head}.${hit}`, `Replace "${pattern.name}" with "${head}.${hit}"`, confidence))
+            : spellingFix(head, ctx.app.enums.keys(), (hit) => `${hit}.${member}`, (hit, confidence) => replaceSpan(pattern.span, `${hit}.${member}`, `Replace "${pattern.name}" with "${hit}.${member}"`, confidence));
         ctx.out.push(
           makeDiag('E815', 'error', 'match patterns must be literals, enum members, or else', {
             span: pattern.span,
             nodeId: e.id,
             op: 'match',
             received: pattern.name,
+            ...(decl === undefined ? {} : { expected: decl.values.map((v) => `${head}.${v}`).join(' | ') }),
+            suggestions: spelled.suggestions,
+            fixes: spelled.fixes,
           }),
         );
       }
@@ -941,6 +1116,8 @@ function checkMatch(e: ListNode, scope: Scope, ctx: Ctx): void {
             expected: decl.values.join(' | '),
             received: covered.join(' '),
             suggestions: missing.map((m) => `(${decl.name}.${m} ...)`),
+            // No (else ...) clause exists here, so the arms go before the closing paren.
+            fixes: fixesOf(appendChildFix(e, missing.map((m) => `(${decl.name}.${m} null)`).join(' '), 'Add missing match arms (fill in)', 'placeholder')),
           }),
         );
       }
@@ -990,12 +1167,182 @@ function checkStdlibInputs(e: ListNode, scope: Scope, ctx: Ctx): void {
   if ((op === 'count' || op === 'contains') && args[0] !== undefined) checkType(args[0], { type: 'union', members: [{ type: 'string' }, { type: 'list' }], nullable: op === 'count' }, scope, ctx, op);
 }
 
+type Literal = StringAtom | NumberAtom | BooleanAtom | NullAtom;
+
+function isLiteral(e: SExpr): e is Literal {
+  return e.kind === 'string' || e.kind === 'number' || e.kind === 'boolean' || e.kind === 'null';
+}
+
+/** A literal operand a throwing op can never accept. */
+interface LiteralFault {
+  span: Span;
+  message: string;
+  received: string;
+  expected: string;
+}
+
+/** A faulty literal, `'dynamic'` when a deciding operand is only known at runtime, or undefined when the literals pass. */
+type LiteralVerdict = LiteralFault | 'dynamic' | undefined;
+
+/** The engine's reason, without V8's "Invalid regular expression: /pattern/flags: " echo of a literal the diagnostic already quotes. */
+function faultReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/^Invalid regular expression: \/.*\/[a-z]*: /, '');
+}
+
+/**
+ * Verifies the operands that decide whether a throwing op throws (the text of
+ * json-parse and url-decode, the size of chunk, the epoch of date-iso, the
+ * pattern and flags of the regex ops) by running the op's own builtin over the
+ * literal ones. That validates a literal; no user code runs. `'dynamic'` means
+ * a deciding operand is only known at runtime; `undefined` means the literals
+ * passed, or the input contract already rejected their kind.
+ */
+function verifyThrowingLiterals(op: string, args: SExpr[]): LiteralVerdict {
+  const trying = (run: () => unknown, span: Span, label: string, received: string, expected: string): LiteralFault | undefined => {
+    try {
+      run();
+      return undefined;
+    } catch (error) {
+      return { span, message: `${label}: ${faultReason(error)}`, received, expected };
+    }
+  };
+  if (op === 'regex-test' || op === 'regex-find' || op === 'regex-replace') {
+    // Flags are valid or not whatever the pattern, so a literal flags operand is verified on its own and the fault
+    // points at it; a pattern's validity depends on the flags (u/v mode parses escapes differently), so the pattern
+    // is verified only when both are literal.
+    const pattern = args[0];
+    const flagsArg = args[op === 'regex-replace' ? 3 : 2];
+    if (flagsArg !== undefined && isLiteral(flagsArg)) {
+      if (flagsArg.kind !== 'string') return undefined;
+      const badFlags = trying(() => new RegExp('', flagsArg.value), flagsArg.span, 'invalid regular expression', flagsArg.value, 'RegExp flags');
+      if (badFlags !== undefined) return badFlags;
+    }
+    if ((pattern !== undefined && !isLiteral(pattern)) || (flagsArg !== undefined && !isLiteral(flagsArg))) return 'dynamic';
+    if (pattern?.kind !== 'string') return undefined;
+    const flags = flagsArg?.kind === 'string' ? flagsArg.value : op === 'regex-replace' ? 'g' : '';
+    return trying(() => new RegExp(pattern.value, flags), pattern.span, 'invalid regular expression', pattern.value, 'valid regular expression');
+  }
+  const first = args[0];
+  if (first !== undefined && !isLiteral(first)) return 'dynamic';
+  switch (op) {
+    case 'json-parse':
+      return first?.kind === 'string' ? trying(() => JSON.parse(first.value), first.span, 'invalid JSON literal', first.value, 'valid JSON') : undefined;
+    case 'url-decode':
+      return first?.kind === 'string'
+        ? trying(() => decodeURIComponent(first.value), first.span, 'invalid URL component literal', first.value, 'percent-encoded URL component')
+        : undefined;
+    case 'date-iso':
+      return first?.kind === 'number'
+        ? trying(() => new Date(first.value).toISOString(), first.span, 'invalid date literal', String(first.value), 'epoch milliseconds within ±8.64e15')
+        : undefined;
+    case 'chunk':
+      return first?.kind === 'number' && !(Number.isSafeInteger(first.value) && first.value > 0)
+        ? { span: first.span, message: 'invalid chunk size: must be a positive integer', received: String(first.value), expected: 'positive integer' }
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** The verdict for one throwing-op node, computed once per check() run however many call-site specialisations revisit it. */
+function literalVerdict(e: ListNode, verdicts: Map<ListNode, LiteralVerdict>): LiteralVerdict {
+  if (verdicts.has(e)) return verdicts.get(e);
+  const verdict = verifyThrowingLiterals(opName(e) ?? '?', e.items.slice(1));
+  verdicts.set(e, verdict);
+  return verdict;
+}
+
+/**
+ * The declared fns that may throw to their caller: a body with a throwing op
+ * whose deciding operands are dynamic outside the guarded operand of attempt,
+ * or a reference to another such fn, resolved to a fixpoint so declaration
+ * order and recursion do not matter. References are matched by name, so a
+ * local that shadows a fn name counts as one. The body itself stays quiet
+ * (the fallback is the caller's to choose); checkInvocation warns at the call.
+ */
+function throwingFunctions(app: AppModel, verdicts: Map<ListNode, LiteralVerdict>): Set<string> {
+  const throwing = new Set<string>();
+  const references = new Map<string, Set<string>>();
+  for (const [name, decl] of app.functions) {
+    const referenced = new Set<string>();
+    const walk = (e: SExpr, guarded: boolean): void => {
+      if (e.kind === 'ident') {
+        const head = e.name.split('.')[0] ?? e.name;
+        if (app.functions.has(head)) referenced.add(head);
+        return;
+      }
+      if (!isList(e)) return;
+      const op = opName(e);
+      if (op !== undefined && EXPR_OPS[op]?.throws === true && !guarded && literalVerdict(e, verdicts) === 'dynamic') throwing.add(name);
+      e.items.forEach((item, i) => walk(item, guarded || (op === 'attempt' && i === 1)));
+    };
+    walk(decl.body, false);
+    references.set(name, referenced);
+  }
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [name, referenced] of references) {
+      if (throwing.has(name) || ![...referenced].some((callee) => throwing.has(callee))) continue;
+      throwing.add(name);
+      changed = true;
+    }
+  }
+  return throwing;
+}
+
+/**
+ * An op the schema marks `throws`: literal deciding operands are verified now
+ * and a bad one is E109; dynamic ones get W801 with a placeholder attempt
+ * wrap, unless the context absorbs the throw (the guarded operand of attempt,
+ * a fn body, a test expression). The fallback is the natural zero value of
+ * the result type, and null where the result is nullable anyway.
+ */
+function checkThrowingOp(e: ListNode, scope: Scope, ctx: Ctx): void {
+  const op = opName(e) ?? '?';
+  const verdict = literalVerdict(e, ctx.literalVerdicts);
+  if (verdict === undefined) return;
+  if (verdict !== 'dynamic') {
+    ctx.out.push(makeDiag('E109', 'error', verdict.message, { span: verdict.span, nodeId: e.id, op, received: verdict.received, expected: verdict.expected }));
+    return;
+  }
+  if (ctx.inAttempt === true || ctx.inFn === true) return;
+  const result = inferInfo(e, scope, ctx.app.tables);
+  const fallback = isNullable(result) ? 'null' : placeholderLiteral(result.type);
+  ctx.out.push(
+    makeDiag('W801', 'warning', `"${op}" may throw at runtime; wrap in (attempt expr fallback)`, {
+      span: e.span,
+      nodeId: e.id,
+      op,
+      expected: 'literal operands or an enclosing (attempt expr fallback)',
+      fixes: fixesOf(wrapFix(e.span, '(attempt ', ` ${fallback})`, `Wrap in (attempt … ${fallback}) (fill in)`, 'placeholder')),
+    }),
+  );
+}
+
 /** A (select :where ...) expression: comparisons over columns and JS values. */
 function checkWhere(e: SExpr, table: TableDecl, scope: Scope, ctx: Ctx): void {
   if (e.kind === 'ident') {
     // Bare idents that are column names reference the column; anything else
     // is an ordinary value expression evaluated in the handler.
     if (table.columns.some((c) => c.name === e.name)) return;
+    if (!e.name.includes('.') && !e.name.startsWith('$') && scope.get(e.name) === undefined) {
+      // Unknown everywhere: most likely a misspelt column, so the columns join the handler bindings as candidates.
+      const columns = table.columns.map((c) => c.name);
+      const bindings = [...scope].filter(([, info]) => info.kind !== 'enum').map(([name]) => name);
+      const spelled = spellingFix(e.name, [...columns, ...bindings], (hit) => hit, (hit, confidence) => replaceSpan(e.span, hit, `Replace "${e.name}" with "${hit}"`, confidence));
+      ctx.out.push(
+        makeDiag('E201', 'error', `Unknown reference "${e.name}"`, {
+          span: e.span,
+          op: 'select',
+          received: e.name,
+          expected: columns.join(' | '),
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
+        }),
+      );
+      return;
+    }
     checkExpr(e, scope, ctx);
     return;
   }
@@ -1058,14 +1405,7 @@ function checkServerOp(e: ListNode, scope: Scope, ctx: Ctx): void {
   }
   const parts = splitList(e);
   if (parts.danglingKeyword !== undefined) {
-    ctx.out.push(
-      makeDiag('E105', 'error', `":${parts.danglingKeyword.name}" is missing a value`, {
-        span: parts.danglingKeyword.span,
-        nodeId: e.id,
-        op,
-        field: parts.danglingKeyword.name,
-      }),
-    );
+    ctx.out.push(danglingKeywordDiag(parts.danglingKeyword, e.id, op));
     return;
   }
   if (op === 'fail') {
@@ -1131,16 +1471,15 @@ function checkServerOp(e: ListNode, scope: Scope, ctx: Ctx): void {
   }
   const table = ctx.app.tables.get(tableAtom.name);
   if (table === undefined) {
+    const spelled = spellingFix(tableAtom.name, ctx.app.tables.keys(), (hit) => hit, (hit, confidence) => replaceSpan(tableAtom.span, hit, `Replace "${tableAtom.name}" with "${hit}"`, confidence));
     ctx.out.push(
       makeDiag('E802', 'error', `Unknown table "${tableAtom.name}"`, {
         span: tableAtom.span,
         nodeId: e.id,
         op,
         received: tableAtom.name,
-        suggestions: (() => {
-          const hit = nearest(tableAtom.name, ctx.app.tables.keys());
-          return hit !== undefined ? [hit] : [];
-        })(),
+        suggestions: spelled.suggestions,
+        fixes: spelled.fixes,
       }),
     );
     return;
@@ -1169,6 +1508,7 @@ function checkServerOp(e: ListNode, scope: Scope, ctx: Ctx): void {
             op: 'insert',
             field: col.name,
             expected: table.columns.filter((c) => c.type !== 'auto' && !c.optional && c.defaultValue === undefined).map((c) => ':' + c.name).join(' '),
+            fixes: fixesOf(insertPropFix(tableAtom, col.name, placeholderLiteral(col.type), `Add :${col.name} (fill in)`, 'placeholder')),
           }),
         );
       }
@@ -1181,6 +1521,7 @@ function checkServerOp(e: ListNode, scope: Scope, ctx: Ctx): void {
     }
     if (op === 'select') {
       if (!SELECT_PROPS.has(name)) {
+        const spelled = spellingFix(name, SELECT_PROPS, (hit) => ':' + hit, (hit, confidence) => keywordFix(entry.keyword, hit, confidence));
         ctx.out.push(
           makeDiag('E805', 'error', `select does not take a ":${name}" property`, {
             span: entry.keyword.span,
@@ -1188,6 +1529,8 @@ function checkServerOp(e: ListNode, scope: Scope, ctx: Ctx): void {
             op,
             field: name,
             expected: [...SELECT_PROPS].map((p) => ':' + p).join(' '),
+            suggestions: spelled.suggestions,
+            fixes: spelled.fixes,
           }),
         );
         continue;
@@ -1195,14 +1538,20 @@ function checkServerOp(e: ListNode, scope: Scope, ctx: Ctx): void {
       if (name === 'where') {
         checkWhere(entry.value, table, scope, ctx);
       } else if (name === 'order') {
-        if (entry.value.kind !== 'ident' || !columnNames.has(entry.value.name)) {
+        const order = entry.value;
+        if (order.kind !== 'ident' || !columnNames.has(order.name)) {
+          const spelled = order.kind === 'ident'
+            ? spellingFix(order.name, columnNames, (hit) => hit, (hit, confidence) => replaceSpan(order.span, hit, `Replace "${order.name}" with "${hit}"`, confidence))
+            : NO_SPELLING;
           ctx.out.push(
             makeDiag('E811', 'error', `":order" must name a column of "${table.name}"`, {
-              span: entry.value.span,
+              span: order.span,
               nodeId: e.id,
               op,
               field: 'order',
               expected: table.columns.map((c) => c.name).join(' | '),
+              suggestions: spelled.suggestions,
+              fixes: spelled.fixes,
             }),
           );
         }
@@ -1223,6 +1572,8 @@ function checkServerOp(e: ListNode, scope: Scope, ctx: Ctx): void {
       continue;
     }
     if (!columnNames.has(name) || name === 'id') {
+      const writable = table.columns.filter((c) => c.type !== 'auto' && c.name !== 'id').map((c) => c.name);
+      const spelled = spellingFix(name, writable, (hit) => ':' + hit, (hit, confidence) => keywordFix(entry.keyword, hit, confidence));
       ctx.out.push(
         makeDiag('E803', 'error', `Table "${table.name}" has no writable column "${name}"`, {
           span: entry.keyword.span,
@@ -1231,10 +1582,8 @@ function checkServerOp(e: ListNode, scope: Scope, ctx: Ctx): void {
           field: name,
           received: name,
           expected: table.columns.filter((c) => c.type !== 'auto').map((c) => ':' + c.name).join(' '),
-          suggestions: (() => {
-            const hit = nearest(name, columnNames);
-            return hit !== undefined ? [hit] : [];
-          })(),
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
         }),
       );
       continue;
@@ -1264,16 +1613,11 @@ function checkSend(e: ListNode, scope: Scope, ctx: Ctx): void {
     );
     return;
   }
-  let template: string | undefined;
-  if (target.kind === 'string') {
-    template = target.value;
-  } else if (isList(target) && opName(target) === 'path') {
-    const tp = splitList(target);
-    const t = tp.rest[0];
-    if (t?.kind === 'string') template = t.value;
-    for (const [, entry] of tp.props) checkExpr(entry.value, scope, ctx);
-  }
-  if (template === undefined) {
+  // The route text is the string target itself or the template of a (path ...) form.
+  const pathParts = isList(target) && opName(target) === 'path' ? splitList(target) : undefined;
+  if (pathParts !== undefined) for (const [, entry] of pathParts.props) checkExpr(entry.value, scope, ctx);
+  const templateAtom = target.kind === 'string' ? target : pathParts?.rest[0];
+  if (templateAtom === undefined || templateAtom.kind !== 'string') {
     ctx.out.push(
       makeDiag('E804', 'error', 'send target must be a route string or a (path ...) form', {
         span: target.span,
@@ -1283,8 +1627,10 @@ function checkSend(e: ListNode, scope: Scope, ctx: Ctx): void {
     );
     return;
   }
+  const template = templateAtom.value;
   const route = ctx.app.apis.find((a) => a.method === method.name && a.route === template);
   if (route === undefined) {
+    const spelled = spellingFix(template, ctx.app.apis.filter((a) => a.method === method.name).map((a) => a.route), (hit) => hit, (hit, confidence) => literalFix(templateAtom, hit, confidence));
     ctx.out.push(
       makeDiag('E806', 'error', `No api route ${method.name.toUpperCase()} ${template}`, {
         span: target.span,
@@ -1292,19 +1638,21 @@ function checkSend(e: ListNode, scope: Scope, ctx: Ctx): void {
         op: 'send',
         received: `${method.name} ${template}`,
         expected: ctx.app.apis.map((a) => `${a.method} ${a.route}`).join(' | ') || '(no api routes declared)',
+        suggestions: spelled.suggestions,
+        fixes: spelled.fixes,
       }),
     );
   } else {
-    if (isList(target) && opName(target) === 'path') {
-      const tp = splitList(target);
+    if (pathParts !== undefined) {
       for (const param of route.params) {
-        if (!tp.props.has(param)) {
+        if (!pathParts.props.has(param)) {
           ctx.out.push(
             makeDiag('E206', 'error', `Route parameter ":${param}" is required by "${template}"`, {
               span: target.span,
               nodeId: e.id,
               op: 'send',
               field: param,
+              expected: route.params.map((p) => ':' + p).join(' '),
             }),
           );
         }
@@ -1327,6 +1675,7 @@ function checkSend(e: ListNode, scope: Scope, ctx: Ctx): void {
               op: 'send',
               field: field.name,
               expected: route.input.map((f) => `:${f.name} ${f.type}${f.optional ? '?' : ''}`).join(' '),
+              fixes: fixesOf(insertPropFix(target, field.name, placeholderLiteral(field.type), `Add :${field.name} (fill in)`, 'placeholder')),
             }),
           );
         }
@@ -1334,6 +1683,7 @@ function checkSend(e: ListNode, scope: Scope, ctx: Ctx): void {
       for (const [name, entry] of parts.props) {
         const field = declared.get(name);
         if (field === undefined) {
+          const spelled = spellingFix(name, declared.keys(), (hit) => ':' + hit, (hit, confidence) => keywordFix(entry.keyword, hit, confidence));
           ctx.out.push(
             makeDiag('E809', 'error', `":${name}" is not a declared input of ${method.name.toUpperCase()} ${template}`, {
               span: entry.keyword.span,
@@ -1342,10 +1692,8 @@ function checkSend(e: ListNode, scope: Scope, ctx: Ctx): void {
               field: name,
               received: name,
               expected: route.input.map((f) => ':' + f.name).join(' ') || '(no input fields)',
-              suggestions: (() => {
-                const hit = nearest(name, declared.keys());
-                return hit !== undefined ? [':' + hit] : [];
-              })(),
+              suggestions: spelled.suggestions,
+              fixes: spelled.fixes,
             }),
           );
           continue;
@@ -1461,19 +1809,36 @@ function checkAction(e: SExpr, scope: Scope, ctx: Ctx): void {
         );
         return;
       }
+      const segments = target.name.split('.');
+      const head = segments[0] ?? target.name;
+      // The full name first: a flow-narrowed field read sits in scope under its dotted path.
       const binding = scope.get(target.name);
-      if (binding === undefined) {
+      if (segments.includes('')) {
+        ctx.out.push(malformedReference(target, { nodeId: e.id, op: 'set', field: 'target' }));
+      } else if (binding === undefined && scope.get(head) === undefined) {
+        const writable = [...scope].filter(([, info]) => info.kind === 'state' || info.kind === 'local').map(([name]) => name);
+        const spelled = spellingFix(head, writable, (hit) => hit, (hit, confidence) => replaceIdentSegment(target, 0, hit, `Replace "${head}" with "${hit}"`, confidence));
         ctx.out.push(
-          makeDiag('E201', 'error', `Unknown reference "${target.name}"`, {
+          makeDiag('E201', 'error', `Unknown reference "${head}"`, {
+            span: target.span,
+            nodeId: e.id,
+            op: 'set',
+            field: 'target',
+            received: head,
+            suggestions: spelled.suggestions,
+            fixes: spelled.fixes,
+          }),
+        );
+      } else if (binding === undefined) {
+        // A known head under a field path: set assigns a whole state or local, and dropping the path is a content choice, not a fix.
+        ctx.out.push(
+          makeDiag('E202', 'error', `"${target.name}" is not writable state (set assigns a whole state or local, not a field)`, {
             span: target.span,
             nodeId: e.id,
             op: 'set',
             field: 'target',
             received: target.name,
-            suggestions: (() => {
-              const hit = nearest(target.name, scope.keys());
-              return hit !== undefined ? [hit] : [];
-            })(),
+            expected: 'state | local',
           }),
         );
       } else if (binding.kind !== 'state' && binding.kind !== 'local') {
@@ -1564,27 +1929,37 @@ function checkAction(e: SExpr, scope: Scope, ctx: Ctx): void {
     case 'refresh': {
       const target = parts.rest[0];
       if (target === undefined || target.kind !== 'ident' || !ctx.app.resources.has(target.name)) {
+        const named = target?.kind === 'ident' ? target : undefined;
+        const spelled = named === undefined
+          ? NO_SPELLING
+          : spellingFix(named.name, ctx.app.resources.keys(), (hit) => hit, (hit, confidence) => replaceSpan(named.span, hit, `Replace "${named.name}" with "${hit}"`, confidence));
         ctx.out.push(
           makeDiag('E807', 'error', 'refresh requires the name of a declared resource', {
             span: target?.span ?? e.span,
             nodeId: e.id,
             op: 'refresh',
-            received: target?.kind === 'ident' ? target.name : undefined,
+            received: named?.name,
             expected: [...ctx.app.resources.keys()].join(' | ') || '(no resources declared)',
+            suggestions: spelled.suggestions,
+            fixes: spelled.fixes,
           }),
         );
       }
       return;
     }
-    default:
+    default: {
+      const spelled = op === undefined ? NO_SPELLING : spellingFix(op, ACTION_OPS, (hit) => hit, (hit, confidence) => renameHeadFix(e, hit, confidence));
       ctx.out.push(
-        makeDiag('E110', 'error', `"${op ?? '?'}" is not an action (expected set, nav, call, send, refresh, toast, or try)`, {
+        makeDiag('E110', 'error', `"${op ?? '?'}" is not an action (expected one of: ${ACTION_OPS.join(', ')})`, {
           span: e.span,
           nodeId: e.id,
           op,
-          expected: 'set | nav | call | send | refresh | toast | try',
+          expected: ACTION_OPS.join(' | '),
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
         }),
       );
+    }
   }
 }
 
@@ -1607,22 +1982,17 @@ function checkProps(node: ListNode, schema: OpSchema, scope: Scope, ctx: Ctx): v
         op: schema.name,
         field: 'enter',
         expected: ':enter fade|fade-up|fade-down|scale-in|slide-left|slide-right',
+        fixes: fixesOf(insertPropFix(staggerEntry.value, 'enter', 'fade', 'Add :enter fade', 'review')),
       }),
     );
   }
   if (parts.danglingKeyword !== undefined) {
-    ctx.out.push(
-      makeDiag('E105', 'error', `":${parts.danglingKeyword.name}" is missing a value`, {
-        span: parts.danglingKeyword.span,
-        nodeId: node.id,
-        op: schema.name,
-        field: parts.danglingKeyword.name,
-      }),
-    );
+    ctx.out.push(danglingKeywordDiag(parts.danglingKeyword, node.id, schema.name));
   }
   for (const [name, entry] of parts.props) {
     const resolved = propType(schema, name);
     if (resolved === undefined) {
+      const spelled = spellingFix(name, allowedProps(schema), (hit) => ':' + hit, (hit, confidence) => keywordFix(entry.keyword, hit, confidence));
       ctx.out.push(
         makeDiag('E102', 'error', `"${schema.name}" has no property ":${name}"`, {
           span: entry.keyword.span,
@@ -1630,10 +2000,8 @@ function checkProps(node: ListNode, schema: OpSchema, scope: Scope, ctx: Ctx): v
           op: schema.name,
           field: name,
           expected: [...allowedProps(schema)].sort().join(' '),
-          suggestions: (() => {
-            const hit = nearest(name, allowedProps(schema));
-            return hit !== undefined ? [':' + hit] : [];
-          })(),
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
         }),
       );
       continue;
@@ -1694,7 +2062,7 @@ function checkProps(node: ListNode, schema: OpSchema, scope: Scope, ctx: Ctx): v
         break;
       case 'size':
         if (value.kind === 'ident' && value.name.startsWith('$')) {
-          checkTokenRef(value.name, value.span, node, ctx);
+          checkTokenRef(value, node, ctx);
         } else if (value.kind === 'boolean' || value.kind === 'null') {
           ctx.out.push(
             makeDiag('E103', 'error', `":${name}" expects a size (number, css string, or $token)`, {
@@ -1724,7 +2092,7 @@ function checkProps(node: ListNode, schema: OpSchema, scope: Scope, ctx: Ctx): v
         break;
       case 'color':
         if (value.kind === 'ident' && value.name.startsWith('$')) {
-          checkTokenRef(value.name, value.span, node, ctx);
+          checkTokenRef(value, node, ctx);
         } else if (value.kind !== 'string') {
           ctx.out.push(
             makeDiag('E103', 'error', `":${name}" expects a color string or $token`, {
@@ -1750,8 +2118,12 @@ function checkProps(node: ListNode, schema: OpSchema, scope: Scope, ctx: Ctx): v
         }
         break;
       case 'enum': {
-        const text = value.kind === 'ident' ? value.name : value.kind === 'string' ? value.value : undefined;
+        const literal = value.kind === 'ident' || value.kind === 'string' ? value : undefined;
+        const text = literal === undefined ? undefined : literal.kind === 'ident' ? literal.name : literal.value;
         if (text === undefined || !(t.values ?? []).includes(text)) {
+          const spelled = literal === undefined || text === undefined
+            ? NO_SPELLING
+            : spellingFix(text, t.values ?? [], (hit) => hit, (hit, confidence) => literalFix(literal, hit, confidence));
           ctx.out.push(
             makeDiag('E103', 'error', `":${name}" must be one of: ${(t.values ?? []).join(', ')}`, {
               span: value.span,
@@ -1760,10 +2132,8 @@ function checkProps(node: ListNode, schema: OpSchema, scope: Scope, ctx: Ctx): v
               field: name,
               received: text ?? value.kind,
               expected: (t.values ?? []).join(' | '),
-              suggestions: text !== undefined ? (() => {
-                const hit = nearest(text, t.values ?? []);
-                return hit !== undefined ? [hit] : [];
-              })() : [],
+              suggestions: spelled.suggestions,
+              fixes: spelled.fixes,
             }),
           );
         }
@@ -1851,19 +2221,18 @@ function checkProps(node: ListNode, schema: OpSchema, scope: Scope, ctx: Ctx): v
   }
 }
 
-function checkTokenRef(name: string, span: SExpr['span'], node: ListNode, ctx: Ctx): void {
-  const tokenName = name.slice(1);
+function checkTokenRef(token: IdentAtom, node: ListNode, ctx: Ctx): void {
+  const tokenName = token.name.slice(1);
   if (!ctx.app.tokens.has(tokenName)) {
+    const spelled = spellingFix(tokenName, ctx.app.tokens.keys(), (hit) => '$' + hit, (hit, confidence) => tokenFix(token, hit, confidence));
     ctx.out.push(
       makeDiag('E205', 'error', `Unknown design token "$${tokenName}"`, {
-        span,
+        span: token.span,
         nodeId: node.id,
-        received: name,
+        received: token.name,
         expected: [...ctx.app.tokens.keys()].map((t) => '$' + t).join(' ') || '(no tokens declared)',
-        suggestions: (() => {
-          const hit = nearest(tokenName, ctx.app.tokens.keys());
-          return hit !== undefined ? ['$' + hit] : [];
-        })(),
+        suggestions: spelled.suggestions,
+        fixes: spelled.fixes,
       }),
     );
   }
@@ -1898,6 +2267,8 @@ function checkComponentInstance(node: ListNode, component: ComponentModel, scope
           op: component.name,
           field: prop.name,
           expected: component.props.map((p) => ':' + p.name).join(' '),
+          // An action slot takes a form, not a value, so it has no stand-in.
+          fixes: prop.type === 'action' ? undefined : fixesOf(insertPropFix(parts.op, prop.name, placeholderLiteral(prop.type), `Add :${prop.name} (fill in)`, 'placeholder')),
         }),
       );
     }
@@ -1906,6 +2277,7 @@ function checkComponentInstance(node: ListNode, component: ComponentModel, scope
     if (name === 'id' || name === 'key') continue;
     const decl = declared.get(name);
     if (decl === undefined) {
+      const spelled = spellingFix(name, declared.keys(), (hit) => ':' + hit, (hit, confidence) => keywordFix(entry.keyword, hit, confidence));
       ctx.out.push(
         makeDiag('E102', 'error', `"${component.name}" has no property ":${name}"`, {
           span: entry.keyword.span,
@@ -1913,6 +2285,8 @@ function checkComponentInstance(node: ListNode, component: ComponentModel, scope
           op: component.name,
           field: name,
           expected: component.props.map((p) => ':' + p.name).join(' ') || '(no properties)',
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
         }),
       );
       continue;
@@ -1960,12 +2334,19 @@ export function checkElement(e: SExpr, scope: Scope, ctx: Ctx): void {
 
   const schema = lookupOp(op);
   if (schema === undefined) {
+    // Candidates are what element position accepts: every op but the declarations and actions rejected below, plus components.
+    const elementOps = allOpNames().filter((name) => {
+      const category = lookupOp(name)?.category;
+      return category !== 'declaration' && category !== 'action';
+    });
+    const spelled = spellingFix(op, [...elementOps, ...ctx.app.components.keys()], (hit) => hit, (hit, confidence) => renameHeadFix(e, hit, confidence));
     ctx.out.push(
       makeDiag('E101', 'error', `Unknown operation "${op}"`, {
         span: e.span,
         nodeId: e.id,
         op,
-        suggestions: suggestionsFor(op, ctx, []),
+        suggestions: spelled.suggestions,
+        fixes: spelled.fixes,
       }),
     );
     return;
@@ -2021,7 +2402,7 @@ export function checkElement(e: SExpr, scope: Scope, ctx: Ctx): void {
         ctx.out.push(makeDiag('E104', 'error', 'if requires a condition', { span: e.span, nodeId: e.id, op: 'if' }));
         return;
       }
-      checkExpr(cond, scope, ctx);
+      checkCondition(cond, scope, ctx, 'if');
       const branches = rest.slice(1);
       if (branches.length < 1 || branches.length > 2) {
         ctx.out.push(
@@ -2045,7 +2426,7 @@ export function checkElement(e: SExpr, scope: Scope, ctx: Ctx): void {
         ctx.out.push(makeDiag('E104', 'error', 'when requires a condition', { span: e.span, nodeId: e.id, op: 'when' }));
         return;
       }
-      checkExpr(cond, scope, ctx);
+      checkCondition(cond, scope, ctx, 'when');
       const guarded = new Set(ctx.guarded);
       for (const r of guardedResources(cond, ctx)) guarded.add(r);
       for (const child of rest.slice(1)) checkElement(child, narrowScope(cond, scope, true, ctx.app.tables), { ...ctx, guarded });
@@ -2083,6 +2464,8 @@ export function checkElement(e: SExpr, scope: Scope, ctx: Ctx): void {
             nodeId: e.id,
             op: 'image',
             field: 'alt',
+            expected: ':alt "description of the image"',
+            fixes: fixesOf(insertPropFix(src ?? parts.op, 'alt', '""', 'Add :alt "" (fill in)', 'placeholder')),
           }),
         );
       }
@@ -2117,7 +2500,13 @@ export function checkElement(e: SExpr, scope: Scope, ctx: Ctx): void {
       }
       if (!hasLabel) {
         ctx.out.push(
-          makeDiag('W402', 'warning', 'button has no accessible label', { span: e.span, nodeId: e.id, op: 'button' }),
+          makeDiag('W402', 'warning', 'button has no accessible label', {
+            span: e.span,
+            nodeId: e.id,
+            op: 'button',
+            expected: 'a label expression or element child before the event handlers',
+            fixes: fixesOf(insertAfterFix(parts.op, '"Label"', 'Add a label (fill in)', 'placeholder')),
+          }),
         );
       }
       return;
@@ -2259,12 +2648,14 @@ export function checkElement(e: SExpr, scope: Scope, ctx: Ctx): void {
     }
     case 'file-input': {
       if (ctx.app.uploads === undefined) {
+        // A malformed (uploads ...) is absent from the model but present in the source, and already carries its own E818.
+        const declared = ctx.app.node.items.some((item) => isList(item) && opName(item) === 'uploads');
         ctx.out.push(
           makeDiag('E818', 'error', 'file-input requires an (uploads ...) declaration in the app', {
             span: e.span,
             nodeId: e.id,
             op: 'file-input',
-            suggestions: ['(uploads)'],
+            ...(declared ? {} : { suggestions: ['(uploads)'], fixes: fixesOf(insertChildFix(ctx.app.node, '(uploads)', 'Add (uploads) to app', 'safe')) }),
           }),
         );
       }
@@ -2284,7 +2675,13 @@ export function checkElement(e: SExpr, scope: Scope, ctx: Ctx): void {
     case 'link': {
       if (!parts.props.has('to')) {
         ctx.out.push(
-          makeDiag('E106', 'error', 'link requires a :to route', { span: e.span, nodeId: e.id, op: 'link', field: 'to' }),
+          makeDiag('E106', 'error', 'link requires a :to route', {
+            span: e.span,
+            nodeId: e.id,
+            op: 'link',
+            field: 'to',
+            fixes: fixesOf(insertPropFix(parts.op, 'to', '""', 'Add :to "" (fill in)', 'placeholder')),
+          }),
         );
       }
       for (const item of rest) {
@@ -2342,7 +2739,8 @@ function fnParamInfo(app: AppModel, typeName: string | undefined, decl: { name: 
 }
 
 export function check(app: AppModel, out: Diagnostic[]): void {
-  const base: Ctx = { app, out, guarded: new Set(), inComponent: false };
+  const literalVerdicts = new Map<ListNode, LiteralVerdict>();
+  const base: Ctx = { app, out, guarded: new Set(), inComponent: false, throwingFns: throwingFunctions(app, literalVerdicts), literalVerdicts };
 
   const stateScope = stateInitializerScope(app);
   for (const [name, state] of app.states) {
@@ -2353,7 +2751,7 @@ export function check(app: AppModel, out: Diagnostic[]): void {
   // fn bodies are pure: params + other fns + imports + globals, no state.
   for (const [, decl] of app.functions) {
     const paramInfos = decl.paramTypes.map((t) => fnParamInfo(app, t, decl, out));
-    checkExpr(decl.body, fnScope(app, decl.params, paramInfos), base);
+    checkExpr(decl.body, fnScope(app, decl.params, paramInfos), { ...base, inFn: true });
   }
 
   // api handlers: route params + body + user + fns + imports, server ops enabled.
@@ -2465,20 +2863,32 @@ export function check(app: AppModel, out: Diagnostic[]): void {
   for (const seed of app.seeds) {
     const table = app.tables.get(seed.table);
     if (table === undefined) {
+      const tableAtom = splitList(seed.node).rest[0];
+      const spelled = tableAtom?.kind === 'ident'
+        ? spellingFix(seed.table, app.tables.keys(), (hit) => hit, (hit, confidence) => replaceSpan(tableAtom.span, hit, `Replace "${seed.table}" with "${hit}"`, confidence))
+        : NO_SPELLING;
       out.push(
         makeDiag('E802', 'error', `Unknown table "${seed.table}" in (seed ...)`, {
           span: seed.node.span,
           nodeId: seed.node.id,
           op: 'seed',
           received: seed.table,
+          suggestions: spelled.suggestions,
+          fixes: spelled.fixes,
         }),
       );
       continue;
     }
+    const writable = table.columns.filter((c) => c.type !== 'auto').map((c) => c.name);
     for (const row of seed.rows) {
+      const keywords = splitList(row.node).props;
       for (const [name, value] of row.props) {
         const col = table.columns.find((c) => c.name === name);
         if (col === undefined || col.type === 'auto') {
+          const keyword = keywords.get(name)?.keyword;
+          const spelled = keyword === undefined
+            ? NO_SPELLING
+            : spellingFix(name, writable, (hit) => ':' + hit, (hit, confidence) => keywordFix(keyword, hit, confidence));
           out.push(
             makeDiag('E803', 'error', `Table "${table.name}" has no writable column "${name}"`, {
               span: row.node.span,
@@ -2486,6 +2896,8 @@ export function check(app: AppModel, out: Diagnostic[]): void {
               op: 'seed',
               field: name,
               expected: table.columns.filter((c) => c.type !== 'auto').map((c) => ':' + c.name).join(' '),
+              suggestions: spelled.suggestions,
+              fixes: spelled.fixes,
             }),
           );
           continue;
@@ -2567,6 +2979,7 @@ export function check(app: AppModel, out: Diagnostic[]): void {
         }),
       );
     }
-    checkExpr(expr, testScope, { ...base, guarded: new Set() });
+    // A throw inside expect-eq fails the test, which is the assertion the author wants.
+    checkExpr(expr, testScope, { ...base, guarded: new Set(), inFn: true });
   });
 }

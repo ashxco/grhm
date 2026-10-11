@@ -2,7 +2,8 @@
   (local email "")
   (v :pad 32 :gap 24
     (heading "All products")
-    (when products.error
+    (when
+      (not-null products.error)
       (txt "Failed to load: " products.error :color "#991b1b"))
     (h :gap 8 :align center
       (menu "Sort"

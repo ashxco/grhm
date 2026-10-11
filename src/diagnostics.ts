@@ -3,6 +3,52 @@ import { Span } from './ast.js';
 export type Severity = 'error' | 'warning' | 'info';
 
 /**
+ * How much trust a machine-applicable fix deserves.
+ * - safe: the unique mechanical correction — a unique nearest spelling within
+ *   edit distance 2 from a closed candidate set that leaves most of the name
+ *   intact (`isSafeSpelling`: never for one- or two-character names, one edit
+ *   for three-character ones), re-spelled in the token's own syntax (a keyword
+ *   keeps its `:`, a token its `$`, a string its quotes, a dotted identifier
+ *   its other segments), or a declaration the program provably needs with no
+ *   free choice such as `(uploads)`. Applying it cannot change code that was
+ *   already correct.
+ * - review: well-formed and clears the diagnostic, but encodes a choice (a
+ *   fallback value, a tied spelling candidate, deleting a dangling keyword).
+ * - placeholder: inserts a syntactically valid stand-in the author must
+ *   replace (`""`, `0`, `false`, `null`, `(arr)`, `(E.m null)`); titles end
+ *   with "(fill in)". Never applied by confidence level, only by explicit id.
+ */
+export type FixConfidence = 'safe' | 'review' | 'placeholder';
+
+/** Confidence tiers ranked most trusted first; consumers sort and gate by this rank. */
+export const CONFIDENCE_RANK: Record<FixConfidence, number> = { safe: 0, review: 1, placeholder: 2 };
+
+/**
+ * One text replacement. `start`/`end` follow Span exactly: UTF-16 code-unit
+ * offsets into the file's current text (the raw file or an LSP overlay, never
+ * canonical text), `end` exclusive. `start === end` inserts; `text === ''`
+ * deletes.
+ */
+export interface TextEdit {
+  /** As Span.file; absent in single-source compiles, where consumers substitute the project entry. */
+  file?: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** A machine-applicable repair for one diagnostic; its edits apply together or not at all. */
+export interface Fix {
+  /** `'f' + fnv1a` of title, confidence, and sorted edits (offsets and text, not the file): identical fixes from two diagnostics collapse into one. */
+  id: string;
+  /** Imperative, quoting the exact before/after text where there is one: `Replace ":colr" with ":color"`. */
+  title: string;
+  confidence: FixConfidence;
+  /** Sorted by (file, start); pairwise non-conflicting (see editsConflict). */
+  edits: TextEdit[];
+}
+
+/**
  * Structured diagnostic (PRD FR-8). Machine-readable first; the human
  * rendering is a projection of this schema.
  */
@@ -17,7 +63,10 @@ export interface Diagnostic {
   field?: string;
   received?: string;
   expected?: string;
+  /** Display-only hints (candidate spellings, prose); never spliced into source. */
   suggestions?: string[];
+  /** Machine-applicable repairs, most confident first, at most one `safe`; absent when none is known. */
+  fixes?: Fix[];
 }
 
 export interface DiagOptions {
@@ -28,10 +77,29 @@ export interface DiagOptions {
   received?: string;
   expected?: string;
   suggestions?: string[];
+  fixes?: Fix[];
 }
 
 export function makeDiag(code: string, severity: Severity, message: string, opts: DiagOptions = {}): Diagnostic {
-  return { schema: 1, code, severity, message, ...opts };
+  const { fixes, ...rest } = opts;
+  return { schema: 1, code, severity, message, ...rest, ...(fixes !== undefined && fixes.length > 0 ? { fixes } : {}) };
+}
+
+/**
+ * Two edits conflict when they touch the same file (a missing file means the
+ * project entry) and share a start offset or properly intersect, which also
+ * covers an insertion strictly inside the other edit. Adjacent ranges and an
+ * insertion at the other edit's end do not conflict.
+ */
+export function editsConflict(a: TextEdit, b: TextEdit, entry: string): boolean {
+  if ((a.file ?? entry) !== (b.file ?? entry)) return false;
+  return a.start === b.start || (a.start < b.end && b.start < a.end);
+}
+
+/** The one fix a consumer may apply without asking: the unique `safe` entry. */
+export function preferredFix(d: Diagnostic): Fix | undefined {
+  const safe = (d.fixes ?? []).filter((f) => f.confidence === 'safe');
+  return safe.length === 1 ? safe[0] : undefined;
 }
 
 export function hasErrors(diagnostics: Diagnostic[]): boolean {
@@ -67,8 +135,8 @@ export const CODE_DOCS: Record<string, string> = {
   W402: 'Button has no accessible label',
   E501: 'Patch target or property not found',
   E502: 'Invalid patch move',
-  E503: 'Patch would produce an invalid program',
-  E504: 'Patch revision conflict',
+  E503: 'Patch or fix would produce an invalid program',
+  E504: 'Patch or fix revision conflict',
   W501: 'Patch has no revision precondition',
   E601: 'Invalid interop declaration or call',
   W601: 'Unchecked interop call (validated only by TypeScript at build time)',
@@ -96,6 +164,7 @@ export const CODE_DOCS: Record<string, string> = {
   E817: 'Invalid job declaration',
   E818: 'Invalid uploads declaration or file-input without (uploads ...)',
   E819: ':references targets an unknown table',
+  W801: 'Operation may throw at runtime; wrap in (attempt expr fallback)',
   E900: 'Internal compiler error',
 };
 
@@ -113,6 +182,7 @@ export function formatHuman(d: Diagnostic, source?: string, file?: string): stri
   if (d.expected !== undefined) parts.push(`  expected: ${d.expected}`);
   if (d.received !== undefined) parts.push(`  received: ${d.received}`);
   if (d.suggestions !== undefined && d.suggestions.length > 0) parts.push(`  suggestion: ${d.suggestions.join(' | ')}`);
+  for (const fix of d.fixes ?? []) parts.push(`  fix [${fix.confidence}] ${fix.id}: ${fix.title}`);
   if (source !== undefined && d.span !== undefined) {
     const text = lineOf(source, d.span);
     parts.push(`  | ${text}`);

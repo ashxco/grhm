@@ -66,6 +66,11 @@ function num(v: Value): number {
   return Number(v);
 }
 
+/** Parsing ops report "not a number" as an absent value, mirroring the toNum/dateParse helpers. */
+function nanToNull(n: number): number | null {
+  return Number.isNaN(n) ? null : n;
+}
+
 function sortByKey(key: Fn, xs: Value[]): Value[] {
   return [...xs].sort((a, b) => {
     const ka = key(a) as never;
@@ -306,7 +311,7 @@ function evalList(e: SExpr & { kind: 'list' }, ctx: EvalContext, env: Env): Valu
     case 'to-fixed':
       return num(a(1)).toFixed(num(a(0)));
     case 'to-num':
-      return num(a(0));
+      return nanToNull(Number(a(0)));
     case 'to-str':
       return String(a(0));
     case 'upper':
@@ -434,7 +439,7 @@ function evalList(e: SExpr & { kind: 'list' }, ctx: EvalContext, env: Env): Valu
     case 'url-encode': return encodeURIComponent(a(0) as string);
     case 'url-decode': return decodeURIComponent(a(0) as string);
     case 'date-iso': return new Date(a(0) as number).toISOString();
-    case 'date-parse': return Date.parse(a(0) as string);
+    case 'date-parse': return nanToNull(Date.parse(a(0) as string));
     case 'clamp': {
       const maximum = a(1), minimum = a(0), value = a(2);
       return Math.min(maximum as number, Math.max(minimum as number, value as number));
@@ -467,11 +472,19 @@ function evalList(e: SExpr & { kind: 'list' }, ctx: EvalContext, env: Env): Valu
   }
 }
 
-/** Format an eval result the way the REPL and CLI print it. */
+/**
+ * Format an eval result the way the REPL and CLI print it: JSON for finite
+ * values, `#<fn>` for closures, and the bare `NaN`/`Infinity`/`-Infinity`
+ * that JSON.stringify would flatten to null, so the non-finite results of
+ * arithmetic stay distinguishable from the real null of to-num/date-parse.
+ */
 export function formatValue(v: Value): string {
-  if (v === undefined) return 'null';
+  if (v === undefined || v === null) return 'null';
   if (typeof v === 'function') return '#<fn>';
-  return JSON.stringify(v, (_key, value: unknown) => (typeof value === 'function' ? '#<fn>' : value)) ?? 'null';
+  if (typeof v === 'number') return Number.isFinite(v) ? JSON.stringify(v) : String(v);
+  if (typeof v === 'string' || typeof v === 'boolean') return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(formatValue).join(',')}]`;
+  return `{${Object.entries(v).map(([key, value]) => `${JSON.stringify(key)}:${formatValue(value)}`).join(',')}}`;
 }
 
 /** True when a top-level list is a pure-core expression usable in eval. */

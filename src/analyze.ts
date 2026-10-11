@@ -1,7 +1,8 @@
-import { ListNode, SExpr, isList, opName, splitList } from './ast.js';
+import { KeywordAtom, ListNode, SExpr, isList, opName, splitList } from './ast.js';
 import type { InputSpec } from './runtime/contracts.js';
 import { Diagnostic, makeDiag } from './diagnostics.js';
-import { API_METHODS, COLUMN_TYPES, EXPR_OPS, SERVER_OPS, lookupOp } from './schema.js';
+import { fixesOf, replaceSpan } from './fix-builders.js';
+import { API_METHODS, COLUMN_TYPES, ColumnType, EXPR_OPS, PropTypeName, SERVER_OPS, lookupOp } from './schema.js';
 import { camelCase, isSafeCssLiteral, pascalCase, routeSpecificity, validBindingName, validJsIdentifier } from './util.js';
 
 /** Semantic model built from the canonical AST. */
@@ -22,8 +23,6 @@ export interface ResourceDecl {
   /** Re-fetch when the generated server broadcasts a db change (SSE). */
   live: boolean;
 }
-
-export type PropTypeName = 'string' | 'number' | 'boolean' | 'list' | 'record' | 'action' | 'any';
 
 export interface PropDecl {
   name: string;
@@ -76,8 +75,6 @@ export interface FnDecl {
   body: SExpr;
   node: ListNode;
 }
-
-export type ColumnType = 'auto' | 'string' | 'number' | 'boolean';
 
 export interface ColumnDecl {
   name: string;
@@ -285,6 +282,21 @@ function routesOverlap(a: string, b: string): boolean {
   });
 }
 
+/**
+ * A keyword with no value after it (`(txt "Hi" :color)`). Deleting it is a
+ * review fix: supplying the value is the other repair.
+ */
+export function danglingKeywordDiag(keyword: KeywordAtom, nodeId: string, op: string | undefined): Diagnostic {
+  return makeDiag('E105', 'error', `":${keyword.name}" is missing a value`, {
+    span: keyword.span,
+    nodeId,
+    op,
+    field: keyword.name,
+    received: `:${keyword.name}`,
+    expected: `a value after :${keyword.name}`,
+    fixes: fixesOf(replaceSpan(keyword.span, '', `Delete ":${keyword.name}"`, 'review')),
+  });
+}
 
 function declarationPropsOk(
   parts: ReturnType<typeof splitList>,
@@ -296,7 +308,7 @@ function declarationPropsOk(
   const names = new Set(['id', ...allowed]);
   let ok = true;
   if (parts.danglingKeyword !== undefined) {
-    out.push(makeDiag('E105', 'error', `":${parts.danglingKeyword.name}" is missing a value`, { span: parts.danglingKeyword.span, nodeId: node.id, op }));
+    out.push(danglingKeywordDiag(parts.danglingKeyword, node.id, op));
     ok = false;
   }
   for (const [name, entry] of parts.props) {
@@ -514,7 +526,7 @@ export function analyze(roots: SExpr[], out: Diagnostic[]): AppModel | undefined
           }
           const rp = splitList(r);
           if (rp.danglingKeyword !== undefined) {
-            out.push(makeDiag('E105', 'error', `":${rp.danglingKeyword.name}" is missing a value`, { span: rp.danglingKeyword.span, nodeId: r.id, op: 'resource' }));
+            out.push(danglingKeywordDiag(rp.danglingKeyword, r.id, 'resource'));
             continue;
           }
           let resourcePropsOk = true;
@@ -825,7 +837,7 @@ export function analyze(roots: SExpr[], out: Diagnostic[]): AppModel | undefined
             }
             let columnPropsOk = true;
             if (cp.danglingKeyword !== undefined) {
-              out.push(makeDiag('E105', 'error', `":${cp.danglingKeyword.name}" is missing a value`, { span: cp.danglingKeyword.span, nodeId: c.id, op: 'table' }));
+              out.push(danglingKeywordDiag(cp.danglingKeyword, c.id, 'table'));
               columnPropsOk = false;
             }
             for (const [name, entry] of cp.props) {
@@ -900,14 +912,7 @@ export function analyze(roots: SExpr[], out: Diagnostic[]): AppModel | undefined
           const rp = splitList(r);
           let routePropsOk = true;
           if (rp.danglingKeyword !== undefined) {
-            out.push(
-              makeDiag('E105', 'error', `":${rp.danglingKeyword.name}" is missing a value`, {
-                span: rp.danglingKeyword.span,
-                nodeId: r.id,
-                op: method,
-                field: rp.danglingKeyword.name,
-              }),
-            );
+            out.push(danglingKeywordDiag(rp.danglingKeyword, r.id, method));
             routePropsOk = false;
           }
           for (const [name, entry] of rp.props) {
@@ -1019,7 +1024,7 @@ export function analyze(roots: SExpr[], out: Diagnostic[]): AppModel | undefined
               const fp = splitList(f);
               let inputPropsOk = true;
               if (fp.danglingKeyword !== undefined) {
-                out.push(makeDiag('E105', 'error', `":${fp.danglingKeyword.name}" is missing a value`, { span: fp.danglingKeyword.span, nodeId: f.id, op: 'input' }));
+                out.push(danglingKeywordDiag(fp.danglingKeyword, f.id, 'input'));
                 inputPropsOk = false;
               }
               for (const [name, entry] of fp.props) {
@@ -1401,15 +1406,19 @@ export function analyze(roots: SExpr[], out: Diagnostic[]): AppModel | undefined
         }
         break;
       }
-      case 'include':
+      case 'include': {
+        const target = parts.rest[0];
         out.push(
           makeDiag('E603', 'error', 'Unresolved (include ...): includes are resolved by the project loader; check the path', {
             span: child.span,
             nodeId: child.id,
             op: 'include',
+            received: target?.kind === 'string' ? target.value : undefined,
+            expected: 'a relative path to an existing .grhm file, loaded through grhm check/build or the SDK',
           }),
         );
         break;
+      }
       default:
         out.push(
           makeDiag('E110', 'error', `"${op ?? '?'}" is not allowed directly inside (app ...)`, {

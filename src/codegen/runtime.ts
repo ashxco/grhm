@@ -24,6 +24,18 @@ export function sum(xs: any[] | null | undefined): number {
   return (xs ?? []).reduce((acc: number, x: any) => acc + Number(x), 0);
 }
 
+/** Number coercion where "not a number" is an absent value rather than NaN. */
+export function toNum(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isNaN(n) ? null : n;
+}
+
+/** Date.parse with unparseable input as null instead of NaN. */
+export function dateParse(text: string): number | null {
+  const ms = Date.parse(text);
+  return Number.isNaN(ms) ? null : ms;
+}
+
 export function zip(xs: any[] | null | undefined, ys: any[] | null | undefined): any[][] {
   const left = xs ?? [], right = ys ?? [];
   return left.slice(0, Math.min(left.length, right.length)).map((value, index) => [value, right[index]]);
@@ -703,7 +715,7 @@ export function fmtMoney(value: number, currency?: string): string {
   return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency ?? 'USD' }).format(value);
 }
 
-export { matchRoute, sortBy, range, sum, zip, chunk, groupBy, dissoc, mergeRecords } from './helpers';
+export { matchRoute, sortBy, range, sum, toNum, dateParse, zip, chunk, groupBy, dissoc, mergeRecords } from './helpers';
 
 interface ErrorBoundaryProps {
   children?: ReactNode;

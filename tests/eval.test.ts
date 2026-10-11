@@ -33,6 +33,8 @@ const range = (from: number, to: number): number[] => {
   return out;
 };
 const sum = (xs: unknown[]): number => (xs ?? []).reduce((acc: number, x: unknown) => acc + Number(x), 0);
+const toNum = (value: unknown): number | null => (Number.isNaN(Number(value)) ? null : Number(value));
+const dateParse = (text: string): number | null => (Number.isNaN(Date.parse(text)) ? null : Date.parse(text));
 
 /** Lower one pure expression to JS and run it with the runtime helpers in scope. */
 function runCompiled(source: string, bindings = new Map<string, Binding>()): unknown {
@@ -43,7 +45,7 @@ function runCompiled(source: string, bindings = new Map<string, Binding>()): unk
   const js = genExpr(node, ctx)
     .replace(/ as any/g, '')
     .replace(/: any/g, '');
-  return new Function('sortBy', 'range', 'sum', `return (${js});`)(sortBy, range, sum);
+  return new Function('sortBy', 'range', 'sum', 'toNum', 'dateParse', `return (${js});`)(sortBy, range, sum, toNum, dateParse);
 }
 
 const norm = (v: unknown): unknown => JSON.parse(JSON.stringify(v ?? null));
@@ -218,6 +220,13 @@ describe('grhm eval: pure core interpreter', () => {
     expect(formatValue(run('(arr 1 "a" true null)'))).toBe('[1,"a",true,null]');
     expect(formatValue(run('(lambda (x) x)'))).toBe('#<fn>');
     expect(formatValue(undefined)).toBe('null');
+    // Non-finite numbers print as themselves, so they never read as the null of an unparseable to-num.
+    expect(formatValue(run('(/ 0 0)'))).toBe('NaN');
+    expect(formatValue(run('(to-num "1e309")'))).toBe('Infinity');
+    expect(formatValue(run('(to-num "-1e309")'))).toBe('-Infinity');
+    expect(formatValue(run('(to-num "x")'))).toBe('null');
+    expect(formatValue(run('(to-str (/ 0 0))'))).toBe('"NaN"');
+    expect(formatValue(run('(obj :a (/ 1 0) :b (to-num "x") :c (arr 0 (/ 0 0)))'))).toBe('{"a":Infinity,"b":null,"c":[0,NaN]}');
   });
 
   // The interpreter (src/eval.ts) and the codegen lowering (codegen/expr.ts)
@@ -235,6 +244,16 @@ describe('grhm eval: pure core interpreter', () => {
       '(min 3 1 2)',
       '(round 2.6)',
       '(to-fixed 2 3.14159)',
+      '(to-num "42")',
+      '(to-num "abc")',
+      '(to-num "")',
+      '(to-num null)',
+      '(or-else (to-num "x") 0)',
+      '(+ 1 (to-num "x"))',
+      '(to-fixed 2 (or-else (to-num "x") 0))',
+      '(date-parse "1970-01-01T00:00:00.000Z")',
+      '(date-parse "nope")',
+      '(is-null (date-parse ""))',
       '(+ "a" "b")',
       '(concat "n=" 4)',
       '(upper (trim "  hi  "))',

@@ -1,10 +1,11 @@
 {
-  "$comment": "Diagnostic repair transcripts (PRD FR-15). Each entry shows a broken program, the stable diagnostic code the compiler emits, and the repaired program. Validated by tests/corpus.test.ts.",
+  "$comment": "Diagnostic repair transcripts (PRD FR-15). Each entry shows a broken program, the stable diagnostic code the compiler emits, and the repaired program. Validated by tests/corpus.test.ts, which also requires a transcript for every code a single-file compile can emit; `grhm codes <CODE>` and the compiler server's `codes` request serve them. An optional \"fix\" level (\"safe\" or \"review\") declares that `grhm fix --level <fix>` replays the broken program to the fixed one; undeclared entries must keep their diagnostic at level safe.",
   "repairs": [
     {
       "name": "typo in a style prop",
       "code": "E102",
       "note": "Unknown property; the diagnostic includes a ':color' suggestion.",
+      "fix": "safe",
       "broken": "(app a (page \"/\" home (txt \"Hi\" :colr \"#111\")))",
       "fixed": "(app a (page \"/\" home (txt \"Hi\" :color \"#111\")))"
     },
@@ -37,6 +38,30 @@
       "fixed": "(app a (state n 0) (page \"/\" home (txt (concat n \"!\"))))"
     },
     {
+      "name": "list used as a condition",
+      "code": "E111",
+      "note": "Conditions must be boolean. A list is truthy even when empty, so (if items ...) never showed the empty state; testing the count changes behaviour, hence a review fix.",
+      "fix": "review",
+      "broken": "(app a (state items (arr)) (page \"/\" home (if items (txt \"Some items\") (txt \"No items yet\"))))",
+      "fixed": "(app a (state items (arr)) (page \"/\" home (if (> (count items) 0) (txt \"Some items\") (txt \"No items yet\"))))"
+    },
+    {
+      "name": "number used as a condition",
+      "code": "E111",
+      "note": "Conditions must be boolean. Comparing against 0 keeps the behaviour, so the fix is safe.",
+      "fix": "safe",
+      "broken": "(app a (state n 0) (page \"/\" home (if n (txt \"Non-zero\") (txt \"Zero\"))))",
+      "fixed": "(app a (state n 0) (page \"/\" home (if (!= n 0) (txt \"Non-zero\") (txt \"Zero\"))))"
+    },
+    {
+      "name": "resource error used as a condition",
+      "code": "E111",
+      "note": "users.error is string | null. The exact spelling (and (not-null users.error) (!= users.error \"\")) is offered as a suggestion; the idiomatic (not-null ...) guard is a review fix.",
+      "fix": "review",
+      "broken": "(app a (data (resource users \"/api/users.json\" :default (arr))) (page \"/\" home (when users.error (txt \"Error: \" users.error))))",
+      "fixed": "(app a (data (resource users \"/api/users.json\" :default (arr))) (page \"/\" home (when (not-null users.error) (txt \"Error: \" users.error))))"
+    },
+    {
       "name": "wrong argument count in a fn call",
       "code": "E112",
       "note": "double takes one parameter; the diagnostic shows the expected shape.",
@@ -61,20 +86,23 @@
       "name": "stagger without an entrance animation",
       "code": "E106",
       "note": ":stagger sequences the children of an :enter animation.",
+      "fix": "review",
       "broken": "(app a (page \"/\" home (v :stagger 60 (txt \"a\") (txt \"b\"))))",
-      "fixed": "(app a (page \"/\" home (v :enter fade :stagger 60 (txt \"a\") (txt \"b\"))))"
+      "fixed": "(app a (page \"/\" home (v :stagger 60 :enter fade (txt \"a\") (txt \"b\"))))"
     },
     {
       "name": "insert into a column that does not exist",
       "code": "E803",
       "note": "The table declares :name; the diagnostic suggests it for the :nmae typo.",
+      "fix": "safe",
       "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :nmae body.name))) (page \"/\" home (txt \"hi\")))",
       "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :name body.name))) (page \"/\" home (txt \"hi\")))"
     },
     {
       "name": "send to a route the api does not declare",
       "code": "E806",
-      "note": "send must target a declared (api ...) route with a matching method.",
+      "note": "send must target a declared (api ...) route with a matching method; the diagnostic re-spells the route from the same-method routes.",
+      "fix": "safe",
       "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :name body.name))) (state n \"\") (page \"/\" home (btn \"Add\" (click (send post \"/api/wish\" :name n)))))",
       "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :name body.name))) (state n \"\") (page \"/\" home (btn \"Add\" (click (send post \"/api/wishes\" :name n)))))"
     },
@@ -89,6 +117,7 @@
       "name": "body field not in the input contract",
       "code": "E808",
       "note": "Routes with (input ...) reject undeclared body fields; declare the field or fix the name.",
+      "fix": "safe",
       "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (input (name string)) (insert wishes :name body.nmae))) (page \"/\" home (txt \"hi\")))",
       "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (input (name string)) (insert wishes :name body.name))) (page \"/\" home (txt \"hi\")))"
     },
@@ -131,6 +160,7 @@
       "name": "file-input without an uploads declaration",
       "code": "E818",
       "note": "file-input posts to /api/uploads, which only exists when the app declares (uploads ...).",
+      "fix": "safe",
       "broken": "(app a (db (table t (id auto))) (state photo \"\") (page \"/\" home (file-input :label \"Photo\" :to photo)))",
       "fixed": "(app a (uploads) (db (table t (id auto))) (state photo \"\") (page \"/\" home (file-input :label \"Photo\" :to photo)))"
     },
@@ -149,6 +179,13 @@
       "fixed": "(app a (page \"/\" home (txt (let ((callback (lambda (x) (* x 3)))) (map callback (arr 1 2))))))"
     },
     {
+      "name": "regular expression literal that can never compile",
+      "code": "E109",
+      "note": "Literal operands of throwing ops (json-parse, chunk, regex-*, url-decode, date-iso) are verified at check time with the builtin the runtime calls; an unterminated character class is rejected before it can throw in a page. There is no mechanical repair for a bad literal.",
+      "broken": "(app a (page \"/\" home (txt (if (regex-test \"[\" \"abc\") \"yes\" \"no\"))))",
+      "fixed": "(app a (page \"/\" home (txt (if (regex-test \"[a-c]\" \"abc\") \"yes\" \"no\"))))"
+    },
+    {
       "name": "column references an unknown table",
       "code": "E819",
       "note": ":references must name a declared table; the foreign key targets its id column.",
@@ -159,6 +196,7 @@
       "name": "nullable list lookup used as a required number",
       "code": "E111",
       "note": "first, last, nth, and find can return no value; guard with not-null or provide an or-else fallback before arithmetic.",
+      "fix": "review",
       "broken": "(app a (page \"/\" home (txt (+ (first (arr 1 2)) 1))))",
       "fixed": "(app a (page \"/\" home (txt (+ (or-else (first (arr 1 2)) 0) 1))))"
     },
@@ -179,13 +217,22 @@
     {
       "name": "numeric standard library operand",
       "code": "E111",
-      "note": "Math operations require non-null numeric inputs. Convert text explicitly.",
+      "note": "Math operations require non-null numeric inputs. Convert text explicitly; to-num yields null for non-numeric text, so supply an or-else fallback.",
       "broken": "(app a (page \"/\" home (txt (clamp \"0\" 10 20))))",
-      "fixed": "(app a (page \"/\" home (txt (clamp (to-num \"0\") 10 20))))"
+      "fixed": "(app a (page \"/\" home (txt (clamp (or-else (to-num \"0\") 0) 10 20))))"
+    },
+    {
+      "name": "parsed number used without a fallback",
+      "code": "E111",
+      "note": "to-num and date-parse return null instead of NaN when the input does not parse; arithmetic needs an or-else fallback or a not-null guard.",
+      "fix": "review",
+      "broken": "(app a (page \"/\" home (txt (+ (to-num \"1\") 1))))",
+      "fixed": "(app a (page \"/\" home (txt (+ (or-else (to-num \"1\") 0) 1))))"
     },
     {
       "name": "Limit excessive expression nesting",
       "code": "E004",
+      "note": "Lists nest deeper than the 256-level parse budget; flatten the expression.",
       "broken": "(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((0)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
       "fixed": "(app a (page \"/\" home (txt \"Recovered\")))"
     },
@@ -223,6 +270,256 @@
       "note": "Health endpoints cannot be shadowed by application routes.",
       "broken": "(app a (api (get \"/healthz\" (obj :ok true))) (page \"/\" home (txt \"Health\")))",
       "fixed": "(app a (api (get \"/api/status\" (obj :ok true))) (page \"/\" home (txt \"Health\")))"
+    },
+    {
+      "name": "misspelled operation",
+      "code": "E101",
+      "note": "cardd is not an operation; the diagnostic offers the nearest one as a safe fix.",
+      "fix": "safe",
+      "broken": "(app a (page \"/\" home (cardd (txt \"x\"))))",
+      "fixed": "(app a (page \"/\" home (card (txt \"x\"))))"
+    },
+    {
+      "name": "misspelled state reference",
+      "code": "E201",
+      "note": "count is declared; the diagnostic suggests it for the cont typo.",
+      "fix": "safe",
+      "broken": "(app a (state count 0) (page \"/\" home (txt \"Total: \" cont)))",
+      "fixed": "(app a (state count 0) (page \"/\" home (txt \"Total: \" count)))"
+    },
+    {
+      "name": "misspelled design token",
+      "code": "E205",
+      "note": "Token references keep their $ sigil; $primary is the unique nearest token.",
+      "fix": "safe",
+      "broken": "(app a (theme (token primary \"#111\")) (page \"/\" home (v :bg $primry (txt \"x\"))))",
+      "fixed": "(app a (theme (token primary \"#111\")) (page \"/\" home (v :bg $primary (txt \"x\"))))"
+    },
+    {
+      "name": "seed for a misspelled table",
+      "code": "E802",
+      "note": "Seeds name a declared table; wishes is the unique nearest one.",
+      "fix": "safe",
+      "broken": "(app a (db (table wishes (id auto) (name string)) (seed wishs (row :name \"x\"))) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (db (table wishes (id auto) (name string)) (seed wishes (row :name \"x\"))) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "misspelled send body field",
+      "code": "E809",
+      "note": "The input contract declares name; the send keyword is re-spelled with its colon.",
+      "fix": "safe",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (input (name string)) (insert wishes :name body.name))) (state n \"\") (page \"/\" home (btn \"Add\" (click (send post \"/api/wishes\" :nme n)))))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (input (name string)) (insert wishes :name body.name))) (state n \"\") (page \"/\" home (btn \"Add\" (click (send post \"/api/wishes\" :name n)))))"
+    },
+    {
+      "name": "near-miss enum member",
+      "code": "E812",
+      "note": "status.closd is within edit distance of one member, so the whole read is re-spelled.",
+      "fix": "safe",
+      "broken": "(app a (enum status open closed) (state s status.open) (page \"/\" home (btn \"Done\" (click (set s status.closd)))))",
+      "fixed": "(app a (enum status open closed) (state s status.open) (page \"/\" home (btn \"Done\" (click (set s status.closed)))))"
+    },
+    {
+      "name": "misspelled message key",
+      "code": "E814",
+      "note": "Message keys come from the locale catalogs; greeting is the unique nearest key.",
+      "fix": "safe",
+      "broken": "(app a (i18n (locale en (msg greeting \"Hi\"))) (page \"/\" home (txt (t greting))))",
+      "fixed": "(app a (i18n (locale en (msg greeting \"Hi\"))) (page \"/\" home (txt (t greeting))))"
+    },
+    {
+      "name": "parsing a request body field that may not be JSON",
+      "code": "W801",
+      "note": "json-parse throws on malformed input and body.text is only known at runtime, so the handler would answer 500 on bad input. The warning carries a placeholder fix wrapping the call in (attempt … null); the fallback is the author's choice, here a 400 via fail, and bulk fixing never applies placeholders, so this repair stays undeclared.",
+      "broken": "(app a (db (table notes (id auto) (text string))) (api (post \"/api/notes\" (json-parse body.text))) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (db (table notes (id auto) (text string))) (api (post \"/api/notes\" (attempt (json-parse body.text) (fail 400 \"text must be JSON\")))) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "unknown string escape",
+      "code": "E001",
+      "note": "\\w is not an escape. Strings know \\n \\t \\r \\\" and \\\\; a literal backslash is written \\\\.",
+      "broken": "(app a (page \"/\" home (txt \"Hello\\world\")))",
+      "fixed": "(app a (page \"/\" home (txt \"Hello\\\\world\")))"
+    },
+    {
+      "name": "unterminated string literal",
+      "code": "E001",
+      "note": "The closing quote is missing, so the string swallows the rest of the file (hence the trailing E003s).",
+      "broken": "(app a (page \"/\" home (txt \"oops)))",
+      "fixed": "(app a (page \"/\" home (txt \"oops\")))"
+    },
+    {
+      "name": "colon without a keyword name",
+      "code": "E001",
+      "note": "A colon starts a keyword and must be followed by its name.",
+      "broken": "(app a (page \"/\" home (txt \"x\" : \"#111\")))",
+      "fixed": "(app a (page \"/\" home (txt \"x\" :color \"#111\")))"
+    },
+    {
+      "name": "character outside the grammar",
+      "code": "E001",
+      "note": "# is not GRHM syntax; comments run from ; to the end of the line.",
+      "broken": "(app a (page \"/\" home (txt \"x\") # heading))",
+      "fixed": "(app a (page \"/\" home (txt \"x\"))) ; heading"
+    },
+    {
+      "name": "extra closing parenthesis",
+      "code": "E002",
+      "note": "One ) too many. Deleting it is offered as a review fix (it may instead mark a missing opener); grhm fix only runs on programs that parse, so apply it by hand or as an editor quick fix.",
+      "broken": "(app a (page \"/\" home (txt \"x\"))))",
+      "fixed": "(app a (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "missing closing parenthesis",
+      "code": "E003",
+      "note": "The app form is never closed. Appending ) at end of input is a review fix (the missing paren may belong earlier) that grhm fix cannot replay, since the program does not parse.",
+      "broken": "(app a (page \"/\" home (txt \"x\"))",
+      "fixed": "(app a (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "invalid binding name",
+      "code": "E104",
+      "note": "Names are lowercase kebab-case so they lower to JavaScript identifiers; underscores are rejected.",
+      "broken": "(app a (state my_count 0) (page \"/\" home (txt my_count)))",
+      "fixed": "(app a (state my-count 0) (page \"/\" home (txt my-count)))"
+    },
+    {
+      "name": "keyword without a value",
+      "code": "E105",
+      "note": "A trailing keyword has no value. Deleting it is a review fix because supplying a value is the other repair.",
+      "fix": "review",
+      "broken": "(app a (page \"/\" home (txt \"Hi\" :color)))",
+      "fixed": "(app a (page \"/\" home (txt \"Hi\")))"
+    },
+    {
+      "name": "duplicate declaration",
+      "code": "E107",
+      "note": "Declarations share one namespace; rename or drop the second n.",
+      "broken": "(app a (state n 0) (state n 1) (page \"/\" home (txt n)))",
+      "fixed": "(app a (state n 0) (page \"/\" home (txt n)))"
+    },
+    {
+      "name": "duplicate route",
+      "code": "E108",
+      "note": "Every page needs a distinct, unambiguous route.",
+      "broken": "(app a (page \"/\" home (txt \"a\")) (page \"/\" other (txt \"b\")))",
+      "fixed": "(app a (page \"/\" home (txt \"a\")) (page \"/other\" other (txt \"b\")))"
+    },
+    {
+      "name": "element directly inside app",
+      "code": "E110",
+      "note": "Only declarations sit directly inside (app ...); elements belong to a page or component. The diagnostic lists the allowed forms.",
+      "broken": "(app a (txt \"x\") (page \"/\" home (txt \"y\")))",
+      "fixed": "(app a (page \"/\" home (txt \"x\") (txt \"y\")))"
+    },
+    {
+      "name": "set targeting a function",
+      "code": "E202",
+      "note": "set writes state or local bindings; double is a fn.",
+      "broken": "(app a (fn double (x) (* x 2)) (state n 0) (page \"/\" home (btn \"Go\" (click (set double 1)))))",
+      "fixed": "(app a (fn double (x) (* x 2)) (state n 0) (page \"/\" home (btn \"Go\" (click (set n 1)))))"
+    },
+    {
+      "name": "misspelled resource field",
+      "code": "E204",
+      "note": "Resources expose data, loading, and error; data is the unique nearest field, so the segment is re-spelled.",
+      "fix": "safe",
+      "broken": "(app a (data (resource users \"/api/users.json\" :default (arr))) (page \"/\" home (txt (count users.dta))))",
+      "fixed": "(app a (data (resource users \"/api/users.json\" :default (arr))) (page \"/\" home (txt (count users.data))))"
+    },
+    {
+      "name": "resource data read without a default",
+      "code": "W301",
+      "note": "Without :default the data is empty until the fetch resolves. Declare a default or guard the read with (if users.loading ...); the placeholder fix inserts :default null for the author to type.",
+      "broken": "(app a (data (resource users \"/api/users.json\")) (page \"/\" home (txt (count users.data))))",
+      "fixed": "(app a (data (resource users \"/api/users.json\" :default (arr))) (page \"/\" home (txt (count users.data))))"
+    },
+    {
+      "name": "image without alt text",
+      "code": "W401",
+      "note": "Screen readers need :alt. The placeholder fix inserts :alt \"\" to fill in, so bulk fixing never applies it.",
+      "broken": "(app a (page \"/\" home (image \"/logo.png\")))",
+      "fixed": "(app a (page \"/\" home (image \"/logo.png\" :alt \"Company logo\")))"
+    },
+    {
+      "name": "button without a label",
+      "code": "W402",
+      "note": "A button needs text or an element child for assistive technology; the placeholder fix inserts \"Label\" to replace.",
+      "broken": "(app a (page \"/\" home (btn (click (nav \"/\")))))",
+      "fixed": "(app a (page \"/\" home (btn \"Home\" (click (nav \"/\")))))"
+    },
+    {
+      "name": "use without a module string",
+      "code": "E601",
+      "note": "The module is a string: a package name or a ./ path relative to the project.",
+      "broken": "(app a (use lodash (import debounce)) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (use \"lodash\" (import debounce)) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "interop call to a browser global",
+      "code": "W601",
+      "note": "The compiler knows nothing about navigator.clipboard.writeText, so only tsc checks the call at build time. Importing a project module declares the binding instead, so references are checked and the generated import is typed.",
+      "broken": "(app a (page \"/\" home (btn \"Copy\" (click (call navigator.clipboard.writeText \"hi\")))))",
+      "fixed": "(app a (use \"./src/clipboard.ts\" (import copy-text)) (page \"/\" home (btn \"Copy\" (click (call copy-text \"hi\")))))"
+    },
+    {
+      "name": "misspelled test step",
+      "code": "E701",
+      "note": "Test steps are a fixed vocabulary; expect-text is the unique nearest step.",
+      "fix": "safe",
+      "broken": "(app a (page \"/\" home (txt \"x\"))) (tests (test \"t\" (visit \"/\") (expect-txt \"x\")))",
+      "fixed": "(app a (page \"/\" home (txt \"x\"))) (tests (test \"t\" (visit \"/\") (expect-text \"x\")))"
+    },
+    {
+      "name": "column with an unknown type",
+      "code": "E801",
+      "note": "Column types are auto, string, number, or boolean.",
+      "broken": "(app a (db (table wishes (id auto) (name text))) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "refresh of a misspelled resource",
+      "code": "E807",
+      "note": "refresh names a declared resource; notes is the unique nearest one.",
+      "fix": "safe",
+      "broken": "(app a (data (resource notes \"/api/notes\" :default (arr))) (page \"/\" home (btn \"Reload\" (click (refresh note)))))",
+      "fixed": "(app a (data (resource notes \"/api/notes\" :default (arr))) (page \"/\" home (btn \"Reload\" (click (refresh notes)))))"
+    },
+    {
+      "name": "insert missing a required column",
+      "code": "E810",
+      "note": "Every non-auto, non-optional column without a default must be supplied. The placeholder fix inserts :name \"\" to fill in.",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes))) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (post \"/api/wishes\" (insert wishes :name body.name))) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "unsupported :where operator",
+      "code": "E811",
+      "note": ":where lowers to parameterized SQL and accepts only the listed comparison and logic operators; contains is the substring match.",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (get \"/api/wishes\" (select wishes :where (like name \"a%\")))) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (get \"/api/wishes\" (select wishes :where (contains name \"a\")))) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "misspelled :order column",
+      "code": "E811",
+      "note": ":order names a column of the table; name is the unique nearest column.",
+      "fix": "safe",
+      "broken": "(app a (db (table wishes (id auto) (name string))) (api (get \"/api/wishes\" (select wishes :order nmae))) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (db (table wishes (id auto) (name string))) (api (get \"/api/wishes\" (select wishes :order name))) (page \"/\" home (txt \"x\")))"
+    },
+    {
+      "name": "locale missing a message",
+      "code": "W701",
+      "note": "Non-default locales should define every key of the default locale; fr lacks bye.",
+      "broken": "(app a (i18n (locale en (msg greeting \"Hi\") (msg bye \"Bye\")) (locale fr (msg greeting \"Salut\"))) (page \"/\" home (txt (t greeting))))",
+      "fixed": "(app a (i18n (locale en (msg greeting \"Hi\") (msg bye \"Bye\")) (locale fr (msg greeting \"Salut\") (msg bye \"Au revoir\"))) (page \"/\" home (txt (t greeting))))"
+    },
+    {
+      "name": "job without an interval",
+      "code": "E817",
+      "note": "A job takes a name, :every seconds, and one body expression; the diagnostic shows the shape.",
+      "broken": "(app a (db (table sessions (id auto))) (job prune (delete-row sessions :id 1)) (page \"/\" home (txt \"x\")))",
+      "fixed": "(app a (db (table sessions (id auto))) (job prune :every 3600 (delete-row sessions :id 1)) (page \"/\" home (txt \"x\")))"
     }
   ]
 }

@@ -21,7 +21,7 @@ const SOURCE = `(app local-values
   (page "/" home
     (local value (make-initial))
     (v
-      (txt (note-render (to-num (first (map value (arr 3))))))
+      (txt (note-render (or-else (to-num (first (map value (arr 3)))) 0)))
       (btn "Replace" (click (set value (make-next)))))))`;
 const EFFECTS = `export const counts = {
   renders: 0, initializers: 0, replacements: 0,

@@ -1,6 +1,7 @@
 import { SExpr, isList, opName, splitList, walkLists } from './ast.js';
 import { AppModel } from './analyze.js';
 import { Diagnostic, makeDiag } from './diagnostics.js';
+import { literalFix, renameHeadFix, spellingFix } from './fix-builders.js';
 import { TEST_STEPS } from './schema.js';
 
 /** Validation of (tests ...) suites: step shapes, routes, node references. */
@@ -35,18 +36,22 @@ export function checkTests(app: AppModel, out: Diagnostic[], checkPureExpr: (exp
     if (n.id !== undefined) nodeIds.add(n.id);
   });
   const routeOk = (route: string): boolean => app.pages.some((p) => matchStaticRoute(p.route, route));
+  const staticRoutes = app.pages.map((p) => p.route).filter((route) => !route.includes('{'));
 
   for (const test of app.tests) {
     for (const step of test.steps) {
       const op = opName(step) ?? '?';
       const spec = TEST_STEPS[op];
       if (spec === undefined) {
+        const spelled = spellingFix(op, Object.keys(TEST_STEPS), (hit) => hit, (hit, confidence) => renameHeadFix(step, hit, confidence));
         out.push(
           makeDiag('E701', 'error', `"${op}" is not a test step`, {
             span: step.span,
             nodeId: step.id,
             op,
             expected: Object.keys(TEST_STEPS).join(' '),
+            suggestions: spelled.suggestions,
+            fixes: spelled.fixes,
           }),
         );
         continue;
@@ -70,6 +75,7 @@ export function checkTests(app: AppModel, out: Diagnostic[], checkPureExpr: (exp
             if (arg.kind !== 'string') {
               out.push(makeDiag('E701', 'error', `"${op}" expects a route string`, { span: arg.span, op }));
             } else if (!routeOk(arg.value)) {
+              const spelled = spellingFix(arg.value, staticRoutes, (hit) => hit, (hit, confidence) => literalFix(arg, hit, confidence));
               out.push(
                 makeDiag('E203', 'error', `"${arg.value}" does not match any page route`, {
                   span: arg.span,
@@ -77,6 +83,8 @@ export function checkTests(app: AppModel, out: Diagnostic[], checkPureExpr: (exp
                   op,
                   received: arg.value,
                   expected: app.pages.map((p) => p.route).join(' '),
+                  suggestions: spelled.suggestions,
+                  fixes: spelled.fixes,
                 }),
               );
             }

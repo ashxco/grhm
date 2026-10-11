@@ -1,12 +1,14 @@
 import { SExpr, isList, opName, splitList } from './ast.js';
-import { ApiRouteDecl, AppModel, ColumnType, ComponentModel, PageModel, TableDecl } from './analyze.js';
-import { BROWSER_GLOBALS, EXPR_OPS } from './schema.js';
+import { ApiRouteDecl, AppModel, ComponentModel, PageModel, TableDecl } from './analyze.js';
+import { BROWSER_GLOBALS, ColumnType, EXPR_OPS } from './schema.js';
 
 export type VarKind = 'state' | 'local' | 'resource' | 'eachvar' | 'param' | 'prop' | 'action' | 'js' | 'fn' | 'enum';
 export type ValueType = 'number' | 'string' | 'boolean' | 'list' | 'row' | 'record' | 'function' | 'null' | 'union' | 'never' | 'unknown';
 
 /** A function retains its lexical scope so untyped parameters can be inferred at a call site. */
 export interface CallableInfo {
+  /** The declared fn this describes, when it is one (lambdas and action props have none). */
+  name?: string;
   params: TypeInfo[];
   pure?: boolean;
   names: string[];
@@ -49,7 +51,7 @@ const NEVER: TypeInfo = { type: 'never' };
 const NULL: TypeInfo = { type: 'null', nullable: true };
 
 export const NUMERIC_OPS = new Set(['+', '-', '*', '/', '<', '>', '<=', '>=', 'mod', 'abs', 'round', 'floor', 'ceil', 'sqrt', 'pow', 'min', 'max']);
-const NUMBER_RESULT = new Set(['+', '-', '*', '/', 'mod', 'count', 'abs', 'round', 'floor', 'ceil', 'sqrt', 'pow', 'min', 'max', 'random', 'to-num', 'sum', 'now']);
+const NUMBER_RESULT = new Set(['+', '-', '*', '/', 'mod', 'count', 'abs', 'round', 'floor', 'ceil', 'sqrt', 'pow', 'min', 'max', 'random', 'sum', 'now']);
 const BOOLEAN_RESULT = new Set(['=', '!=', '<', '>', '<=', '>=', 'and', 'or', 'not', 'starts-with', 'ends-with', 'contains', 'some', 'every', 'is-null', 'not-null']);
 const STRING_RESULT = new Set(['concat', 'path', 'fmt', 'to-str', 'to-fixed', 'upper', 'lower', 'trim', 'join', 'replace', 'date-str', 't']);
 const PRESERVES_ELEMENT: Record<string, number> = { filter: 1, 'sort-by': 1, reverse: 0, take: 1, drop: 1 };
@@ -214,7 +216,7 @@ function moduleScope(app: AppModel, browser = true): Scope {
   for (const [name, decl] of app.enums) scope.set(name, { kind: 'enum', enumValues: decl.values });
   if (browser) for (const name of BROWSER_GLOBALS) scope.set(name, { kind: 'js', browser: true });
   for (const [name, decl] of app.functions) {
-    scope.set(name, bindingFromInfo('fn', { type: 'function', callable: { names: decl.params, pure: true, params: decl.paramTypes.map((type) => declaredType(type, app.tables)), body: decl.body, scope, tables: app.tables } }));
+    scope.set(name, bindingFromInfo('fn', { type: 'function', callable: { name, names: decl.params, pure: true, params: decl.paramTypes.map((type) => declaredType(type, app.tables)), body: decl.body, scope, tables: app.tables } }));
   }
   return scope;
 }
@@ -492,8 +494,8 @@ export function inferInfo(e: SExpr, scope: Scope, tables?: Map<string, TableDecl
   if (op === 'split') return listInfo({ type: 'string' });
   if (op === 'slice') return infer(args[2]);
   if (op === 'call') return inferCall(infer(args[0]), args.slice(1).map((arg) => infer(arg)), tables, visiting);
-  const scalarResult = EXPR_OPS[op]?.result;
-  if (scalarResult !== undefined) return { type: scalarResult };
+  const spec = EXPR_OPS[op];
+  if (spec?.result !== undefined) return spec.nullable === true ? { type: spec.result, nullable: true } : { type: spec.result };
   if (NUMBER_RESULT.has(op)) return { type: 'number' };
   if (BOOLEAN_RESULT.has(op)) return { type: 'boolean' };
   if (STRING_RESULT.has(op)) return { type: 'string' };

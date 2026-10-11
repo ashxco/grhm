@@ -8,6 +8,41 @@ import { compile } from '../src/codegen/index.js';
 const FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'store.grhm'), 'utf8');
 const ROOT = path.join(__dirname, '..');
 
+/** Writes the generated TypeScript under .tmp-test/<name>/gen and typechecks it with tsc --strict. */
+function typecheck(name: string, files: Map<string, string>): void {
+  const root = path.join(ROOT, '.tmp-test', name);
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.mkdirSync(path.join(root, 'gen'), { recursive: true });
+  for (const [file, content] of files) {
+    if (file.endsWith('.css') || file.endsWith('.json')) continue;
+    const target = path.join(root, 'gen', file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  }
+  fs.writeFileSync(
+    path.join(root, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        target: 'ES2022',
+        lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+        module: 'ESNext',
+        moduleResolution: 'bundler',
+        jsx: 'react-jsx',
+        strict: true,
+        skipLibCheck: true,
+        noEmit: true,
+        allowImportingTsExtensions: true,
+        types: ['node'],
+      },
+      include: ['gen'],
+    }),
+  );
+  const tsc = path.join(ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
+  const run = spawnSync(tsc, ['-p', path.join(root, 'tsconfig.json')], { encoding: 'utf8' });
+  expect(run.stdout + run.stderr, run.stdout + run.stderr).not.toContain('error TS');
+  expect(run.status).toBe(0);
+}
+
 /** Concatenation of all generated page modules, for content assertions. */
 function allPages(files: Map<string, string>): string {
   return [...files]
@@ -143,36 +178,35 @@ describe('compiler', () => {
   });
 
   it('generated TypeScript passes tsc under strict mode', () => {
-    const outDir = path.join(ROOT, '.tmp-test', 'gen');
-    fs.rmSync(path.join(ROOT, '.tmp-test'), { recursive: true, force: true });
-    fs.mkdirSync(outDir, { recursive: true });
-    for (const [name, content] of result.files) {
-      if (name.endsWith('.css') || name.endsWith('.json')) continue;
-      const target = path.join(outDir, name);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, content);
-    }
-    fs.writeFileSync(
-      path.join(ROOT, '.tmp-test', 'tsconfig.json'),
-      JSON.stringify({
-        compilerOptions: {
-          target: 'ES2022',
-          lib: ['ES2022', 'DOM', 'DOM.Iterable'],
-          module: 'ESNext',
-          moduleResolution: 'bundler',
-          jsx: 'react-jsx',
-          strict: true,
-          skipLibCheck: true,
-          noEmit: true,
-          allowImportingTsExtensions: true,
-          types: ['node'],
-        },
-        include: ['gen'],
-      }),
-    );
-    const tsc = path.join(ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
-    const run = spawnSync(tsc, ['-p', path.join(ROOT, '.tmp-test', 'tsconfig.json')], { encoding: 'utf8' });
-    expect(run.stdout + run.stderr, run.stdout + run.stderr).not.toContain('error TS');
-    expect(run.status).toBe(0);
+    typecheck('store', result.files);
+  });
+
+  it('null guards composed with and/or narrow in generated TypeScript as they do in the checker', () => {
+    // Every shape the checker's narrowScope admits over a nullable to-num/date-parse/optional-column value,
+    // in a page expression, cond, fn body (lib.ts), api handler (server.ts), and element if/when.
+    const guards = compile(`(app guards
+      (db (table people (id auto) (name string) (age number :optional true)))
+      (api
+        (get "/api/people" (select people))
+        (get "/api/qty/{s}" (let ((q (to-num s))) (if (and (not-null q) (> q 0)) (+ q 1) 0)))
+        (get "/api/ages" (map (lambda (p) (if (and (not-null p.age) (> p.age 1)) (+ p.age 1) 0)) (select people))))
+      (fn bump ((s string)) (let ((m (to-num s))) (if (and (not-null m) (> m 1)) (+ m 1) 0)))
+      (state a "1")
+      (state b "2")
+      (state n (to-num "5"))
+      (state d (date-parse "2024-01-01"))
+      (state on true)
+      (page "/" home
+        (txt (let ((m (to-num a)) (k (to-num b))) (if (and (not-null m) (not-null k)) (+ m k) 0)))
+        (txt (let ((m (to-num a))) (cond ((and (not-null m) (> m 1)) (+ m 1)) (else 0))))
+        (txt (let ((m (to-num a))) (if (or (is-null m) (< m 1)) 0 (+ m 1))))
+        (txt (bump a))
+        (if (and (not-null n) (> n 0)) (txt (+ n 1)) (txt "none"))
+        (when (and on (not-null d)) (txt (date-str d)))))`);
+    expect(guards.diagnostics.filter((d) => d.severity === 'error')).toEqual([]);
+    const home = guards.files.get('pages/home.tsx') ?? '';
+    expect(home).toContain('!!(');
+    expect(home).not.toContain('Boolean(');
+    typecheck('guards', guards.files);
   });
 });

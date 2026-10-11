@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getEncoding } from 'js-tiktoken';
 
 import { compile } from '../src/codegen/index.js';
+import { FixConfidence } from '../src/diagnostics.js';
+import { applyTextEdits } from '../src/fix.js';
 import { format } from '../src/format.js';
 import { parse } from '../src/parser.js';
 import { applyPatchToProject } from '../src/patch.js';
@@ -333,6 +335,113 @@ describe('functions and stdlib', () => {
   });
 });
 
+describe('throwing operations (W801)', () => {
+  const handler = (expr: string): string => `(app a (db (table notes (id auto) (text string))) (api (post "/api/notes" ${expr})) (page "/" home (txt "x")))`;
+
+  it('warns W801 on a dynamic operand in a handler and in a page, and the app still compiles', () => {
+    const api = compile(handler('(json-parse body.text)'));
+    expect(api.diagnostics.map((d) => [d.code, d.message])).toEqual([['W801', '"json-parse" may throw at runtime; wrap in (attempt expr fallback)']]);
+    expect(api.files.size).toBeGreaterThan(0);
+    const page = compile('(app a (state pattern "a") (state s "b") (page "/" home (txt (if (regex-test pattern s) "yes" "no"))))');
+    expect(page.diagnostics.map((d) => d.code)).toEqual(['W801']);
+    expect(page.diagnostics[0]).toMatchObject({ severity: 'warning', op: 'regex-test', expected: 'literal operands or an enclosing (attempt expr fallback)' });
+    expect(page.files.size).toBeGreaterThan(0);
+    expect(codesOf('(app a (state raw "[]") (state parsed (json-parse raw)) (page "/" home (txt "x")))')).toEqual(['W801']);
+  });
+
+  it('stays quiet inside the guarded operand of attempt, in fn bodies, in expect-eq, and for verified literals', () => {
+    expect(codesOf('(app a (state p "a") (state s "b") (page "/" home (txt (if (attempt (regex-test p s) false) "yes" "no"))))')).toEqual([]);
+    expect(codesOf(handler('(attempt (json-parse body.text) (fail 400 "text must be JSON"))'))).toEqual([]);
+    expect(codesOf('(app a (fn p ((s string)) (json-parse s)) (page "/" home (txt "x")))')).toEqual([]);
+    expect(codesOf('(app a (page "/" home (txt "x")))\n(tests (test "t" (expect-eq (json-parse "[1]") (arr 1))))')).toEqual([]);
+    expect(codesOf(wrap('(txt (json-stringify (json-parse "[1]")) (if (regex-test "^a" "abc" "i") "y" "n") (url-decode "a%2Fb") (date-iso 0) (json-stringify (chunk 2 (arr 1))))'))).toEqual([]);
+    // Only the pattern and flags of a regex op can throw; the text may be anything.
+    expect(codesOf('(app a (state s "") (page "/" home (txt (regex-replace "a" "b" s))))')).toEqual([]);
+    // The fallback operand of attempt is not guarded.
+    expect(codesOf('(app a (state s "") (page "/" home (txt (attempt "x" (json-parse s)))))')).toEqual(['W801']);
+  });
+
+  it('rejects literal operands that can never work with E109, even inside attempt', () => {
+    const cases: [string, string, string][] = [
+      ['(json-stringify (json-parse "{bad"))', 'invalid JSON literal: ', '{bad'],
+      ['(if (regex-test "[" "abc") "y" "n")', 'invalid regular expression: ', '['],
+      ['(regex-replace "a" "b" "abc" "z")', 'invalid regular expression: ', 'z'],
+      ['(url-decode "%")', 'invalid URL component literal: ', '%'],
+      ['(json-stringify (chunk 0 (arr 1)))', 'invalid chunk size: ', '0'],
+      ['(date-iso 86400000000000000)', 'invalid date literal: ', '86400000000000000'],
+    ];
+    for (const [expr, prefix, received] of cases) {
+      const result = compile(wrap(`(txt ${expr})`));
+      const error = result.diagnostics.find((d) => d.code === 'E109');
+      expect(error?.message.startsWith(prefix), expr).toBe(true);
+      expect(error, expr).toMatchObject({ received });
+      expect(error?.expected, expr).toBeDefined();
+      expect(result.files.size).toBe(0);
+    }
+    expect(codesOf(wrap('(txt (if (attempt (regex-test "[" "abc") false) "y" "n"))'))).toEqual(['E109']);
+  });
+
+  it('verifies a literal flags operand on its own, whatever the pattern', () => {
+    const page = (expr: string): string => `(app a (state p "a") (state f "i") (page "/" home (txt ${expr})))`;
+    const cases: [string, string][] = [['(regex-test p "x" "bad")', 'bad'], ['(regex-find p "x" "zz")', 'zz'], ['(regex-replace p "r" "x" "gg")', 'gg']];
+    for (const [expr, received] of cases) {
+      const result = compile(page(expr));
+      expect(result.diagnostics.map((d) => [d.code, d.received, d.expected]), expr).toEqual([['E109', received, 'RegExp flags']]);
+      expect(result.files.size, expr).toBe(0);
+    }
+    expect(codesOf('(app a (fn hit ((p string)) (regex-test p "x" "bad")) (page "/" home (txt (hit "q"))))')).toEqual(['E109']);
+    // Valid literal flags over a dynamic pattern, or a literal pattern under dynamic flags, stay dynamic.
+    expect(codesOf(page('(regex-test p "abc" "i")'))).toEqual(['W801']);
+    expect(codesOf(page('(regex-test "abc" "abc" f)'))).toEqual(['W801']);
+  });
+
+  it('reports a fn whose body may throw at its call sites, with the wrap on the call', () => {
+    const fns = '(fn p ((s string)) (json-parse s)) (fn q ((s string)) (p s)) (fn guarded ((s string)) (attempt (json-parse s) null))';
+    const app = (expr: string): string => `(app a ${fns} (db (table notes (id auto) (text string))) (api (post "/api/notes" (input (text string)) ${expr})) (page "/" home (txt "x")))`;
+    const call = compile(app('(p body.text)'));
+    expect(call.diagnostics.map((d) => [d.code, d.message])).toEqual([['W801', '"p" may throw at runtime (its body has an unguarded throwing operation); wrap the call in (attempt expr fallback)']]);
+    expect(call.diagnostics[0]?.fixes?.map((f) => [f.confidence, f.title])).toEqual([['placeholder', 'Wrap in (attempt … null) (fill in)']]);
+    expect(call.files.size).toBeGreaterThan(0);
+    expect(codesOf(app('(call p body.text)'))).toEqual(['W801']);
+    // Through another fn, whatever the declaration order.
+    expect(codesOf(app('(q body.text)'))).toEqual(['W801']);
+    expect(codesOf('(app a (fn q ((s string)) (p s)) (fn p ((s string)) (json-parse s)) (state raw "") (page "/" home (txt (json-stringify (q raw)))))')).toEqual(['W801']);
+    // A bare fn reference is invoked by the consuming op, so the warning names it and offers no wrap.
+    const mapped = compile(app('(map p (arr body.text))')).diagnostics;
+    expect(mapped.map((d) => [d.code, d.message, d.fixes])).toEqual([['W801', '"map" calls "p", which may throw at runtime; wrap in (attempt expr fallback)', undefined]]);
+    // Arguments are not inlined: a literal argument still warns at the call.
+    expect(codesOf('(app a (fn p ((s string)) (json-parse s)) (page "/" home (txt (json-stringify (p "1")))))')).toEqual(['W801']);
+    // Guarded inside the fn, guarded at the call, or never called: quiet.
+    expect(codesOf(app('(guarded body.text)'))).toEqual([]);
+    expect(codesOf(app('(attempt (p body.text) (fail 400 "text must be JSON"))'))).toEqual([]);
+    expect(codesOf(`(app a ${fns} (page "/" home (txt "x")))`)).toEqual([]);
+  });
+
+  it('checks a job body like a handler: literal operands are verified, dynamic ones warn and still compile', () => {
+    const job = (expr: string): string => `(app a (db (table t (id auto) (s string))) (env raw) (job prune :every 60 ${expr}) (page "/" home (txt "x")))`;
+    expect(codesOf(job('(json-parse "x")'))).toEqual(['E109']);
+    const dynamic = compile(job('(json-parse env.raw)'));
+    expect(dynamic.diagnostics.map((d) => [d.code, d.message, d.fixes?.map((f) => [f.confidence, f.title])])).toEqual([
+      ['W801', '"json-parse" may throw at runtime; wrap in (attempt expr fallback)', [['placeholder', 'Wrap in (attempt … null) (fill in)']]],
+    ]);
+    expect(dynamic.files.size).toBeGreaterThan(0);
+    expect(codesOf(job('(attempt (json-parse env.raw) null)'))).toEqual([]);
+  });
+
+  it('verifies a literal once however many call sites specialise the enclosing fn', () => {
+    const literal = JSON.stringify(Array.from({ length: 2000 }, (_, i) => i));
+    const calls = Array.from({ length: 12 }, (_, i) => `(txt (count (f ${i})))`).join(' ');
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      const result = compile(`(app a (fn f (x) (json-parse ${JSON.stringify(literal)})) (page "/" home ${calls}))`);
+      expect(result.diagnostics).toEqual([]);
+      expect(parse.mock.calls.filter(([text]) => text === literal)).toHaveLength(1);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+});
+
 describe('expression typing', () => {
   it('rejects arithmetic on strings with E111', () => {
     expect(codesOf('(app a (state n 0) (page "/" home (txt (+ n "oops"))))')).toContain('E111');
@@ -347,6 +456,102 @@ describe('expression typing', () => {
       (data (resource r "/api/r.json" :default (arr)))
       (page "/" home (if r.loading (txt "...") (txt (+ n (count r.data))))))`;
     expect(compile(src).diagnostics.filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  const errorsOf = (source: string): string[] => compile(source).diagnostics.filter((d) => d.severity === 'error').map((d) => `${d.code}:${d.message}`);
+
+  it('requires a boolean test at every condition site with E111', () => {
+    const sites: [string, string, string][] = [
+      ['if', '(state items (arr 1 2)) (page "/" home (txt (if items "some" "none")))', 'list<number>'],
+      ['if', '(state n 0) (page "/" home (if n (txt "a")))', 'number'],
+      ['when', '(state s "") (page "/" home (when s (txt "a")))', 'string'],
+      ['cond', '(state n 0) (page "/" home (txt (cond (n "a") (else "b"))))', 'number'],
+      ['and', '(state n 0) (page "/" home (txt (and n true)))', 'number'],
+      ['or', '(state s "") (page "/" home (txt (or false s)))', 'string'],
+      ['not', '(state items (arr 1)) (page "/" home (txt (not items)))', 'list<number>'],
+    ];
+    for (const [op, body, received] of sites) {
+      const source = `(app a ${body})`;
+      expect(errorsOf(source), source).toEqual([`E111:"${op}" expects boolean, got ${received}`]);
+      expect(compile(source).diagnostics[0]).toMatchObject({ op, received, expected: 'boolean' });
+    }
+  });
+
+  it('accepts boolean, unknown, never, and narrowed conditions', () => {
+    const programs = [
+      '(app a (state flag false) (page "/" home (if flag (txt "a"))))',
+      '(app a (use "pkg" (import flag)) (page "/" home (when (flag) (txt "a"))))',
+      '(app a (fn f (x) (if x 1 2)) (page "/" home (txt "a")))',
+      '(app a (page "/" home (txt (let ((x null)) (if (not-null x) (if x 1 2) 3)))))',
+      '(app a (page "/" home (txt (let ((b (first (arr true)))) (and (not-null b) b)))))',
+      '(app a (page "/" home (txt (let ((x (first (arr 1)))) (cond ((is-null x) "none") ((> x 0) "some") (else "zero"))))))',
+    ];
+    for (const source of programs) expect(errorsOf(source), source).toEqual([]);
+  });
+
+  it('repairs a non-boolean condition with the test the author meant', () => {
+    const cases: [string, string, FixConfidence, string][] = [
+      ['(app a (state n 0) (page "/" home (if n (txt "a"))))', 'Wrap in (!= … 0)', 'safe', '(if (!= n 0) (txt "a"))'],
+      ['(app a (state s "") (page "/" home (when s (txt "a"))))', 'Wrap in (!= … "")', 'safe', '(when (!= s "") (txt "a"))'],
+      ['(app a (page "/" home (if (first (arr true)) (txt "a"))))', 'Wrap in (or-else … false)', 'safe', '(if (or-else (first (arr true)) false) (txt "a"))'],
+      ['(app a (page "/" home (if (first (arr (arr 1))) (txt "a"))))', 'Wrap in (not-null …)', 'safe', '(if (not-null (first (arr (arr 1)))) (txt "a"))'],
+      ['(app a (page "/" home (if (json-parse "1") (txt "a"))))', 'Wrap in (not-null …)', 'review', '(if (not-null (json-parse "1")) (txt "a"))'],
+      ['(app a (state items (arr 1)) (page "/" home (if items (txt "a"))))', 'Wrap in (> (count …) 0)', 'review', '(if (> (count items) 0) (txt "a"))'],
+    ];
+    for (const [source, title, confidence, expected] of cases) {
+      const [fix, ...rest] = compile(source).diagnostics.find((d) => d.code === 'E111')?.fixes ?? [];
+      expect(fix, source).toMatchObject({ title, confidence });
+      expect(rest).toEqual([]);
+      if (fix === undefined) throw new Error(source);
+      const patched = applyTextEdits(source, fix.edits);
+      expect(patched).toContain(expected);
+      expect(errorsOf(patched)).toEqual([]);
+    }
+  });
+
+  it('guards a nullable record, function, or union test with not-null, reviewed only when the value may be a scalar', () => {
+    const cases: [string, string, FixConfidence][] = [
+      ['(app a (page "/" home (if (first (arr (obj :a 1))) (txt "a"))))', 'record | null', 'safe'],
+      ['(app a (fn f (x) x) (page "/" home (if (first (arr f)) (txt "a"))))', '(unknown) => unknown | null', 'safe'],
+      ['(app a (page "/" home (if (first (arr 1 "a")) (txt "a"))))', 'number | string | null', 'review'],
+    ];
+    for (const [source, received, confidence] of cases) {
+      const error = compile(source).diagnostics.find((d) => d.code === 'E111');
+      expect(error, source).toMatchObject({ message: `"if" expects boolean, got ${received}`, received });
+      // Only a nullable scalar gets the spelled-out `(and (not-null x) (!= x …))` hint.
+      expect(error?.suggestions, source).toBeUndefined();
+      expect(error?.fixes?.map((f) => [f.title, f.confidence]), source).toEqual([['Wrap in (not-null …)', confidence]]);
+      const fix = error?.fixes?.[0];
+      if (fix === undefined) throw new Error(source);
+      expect(errorsOf(applyTextEdits(source, fix.edits)), source).toEqual([]);
+    }
+  });
+
+  it('spells the exact repair of a nullable scalar condition as a suggestion beside a review not-null fix', () => {
+    const source = '(app a (data (resource users "/api/users.json" :default (arr))) (page "/" home (when users.error (txt "Error: " users.error))))';
+    const error = compile(source).diagnostics.find((d) => d.code === 'E111');
+    expect(error).toMatchObject({ message: '"when" expects boolean, got string | null', suggestions: ['(and (not-null users.error) (!= users.error ""))'] });
+    expect(error?.fixes?.map((f) => [f.title, f.confidence])).toEqual([['Wrap in (not-null …)', 'review']]);
+    const number = compile('(app a (page "/" home (if (first (arr 1 2)) (txt "a"))))').diagnostics.find((d) => d.code === 'E111');
+    expect(number?.suggestions).toEqual(['(and (not-null (first (arr 1 2))) (!= (first (arr 1 2)) 0))']);
+  });
+
+  it('offers no fix for a condition that is always truthy or always falsy', () => {
+    for (const source of ['(app a (page "/" home (if (obj :a 1) (txt "a"))))', '(app a (page "/" home (if null (txt "a"))))']) {
+      const error = compile(source).diagnostics.find((d) => d.code === 'E111');
+      expect(error?.expected, source).toBe('boolean');
+      expect(error?.fixes, source).toBeUndefined();
+    }
+  });
+
+  it('reports a condition that fails its own check only once', () => {
+    expect(errorsOf('(app a (page "/" home (if missing (txt "a"))))')).toEqual(['E201:Unknown reference "missing"']);
+    expect(errorsOf('(app a (page "/" home (if (+ "a" 1) (txt "a"))))')).toEqual(['E111:"+" expects number, got string']);
+  });
+
+  it('keeps a not-null wrapped error read as a W301 guard', () => {
+    expect(codesOf('(app a (data (resource r "/x")) (page "/" home (when (not-null r.error) (each u r.data (txt u)))))')).toEqual([]);
+    expect(codesOf('(app a (data (resource r "/x")) (page "/" home (each u r.data (txt u))))')).toEqual(['W301']);
   });
 });
 
@@ -822,7 +1027,7 @@ describe('full-stack: db, api, send, refresh', () => {
     const cols = '(app a (db (table wishes (id auto) (name string))) (api (post "/api/x" (insert wishes :nmae "y"))) (page "/" home (txt "x")))';
     const colDiags = compile(cols).diagnostics;
     expect(colDiags.map((d) => d.code)).toContain('E803');
-    expect(colDiags.find((d) => d.code === 'E803')?.suggestions).toContain('name');
+    expect(colDiags.find((d) => d.code === 'E803')?.suggestions).toContain(':name');
   });
 
   it('rejects duplicate api routes with E804 and missing :id with E805', () => {

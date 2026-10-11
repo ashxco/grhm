@@ -7,15 +7,15 @@
  */
 
 export interface Span {
-  /** 0-based byte offset of the first character. */
+  /** 0-based UTF-16 code-unit offset (JS string index) of the first character; `source.slice(start, end)` is the token text. */
   start: number;
-  /** 0-based byte offset one past the last character. */
+  /** 0-based UTF-16 code-unit offset one past the last character (exclusive). */
   end: number;
   /** 1-based line of the first character. */
   line: number;
-  /** 1-based column of the first character. */
+  /** 1-based column of the first character, in code units. */
   col: number;
-  /** Source file (relative to project root); absent in single-source compiles. */
+  /** Source file relative to the project root with forward slashes; absent in single-source compiles. */
   file?: string;
 }
 

@@ -148,7 +148,7 @@ export interface GenCtx {
 }
 
 const JS_IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-const EXPR_HELPERS = new Set(['range', 'sum', 'sortBy', 'zip', 'chunk', 'groupBy', 'dissoc', 'mergeRecords', 'tMsg', 'dbAll', 'dbSelect', 'dbInsert', 'dbUpdate', 'dbDelete', 'apiFail', 'dbTx', 'handleActionError']);
+const EXPR_HELPERS = new Set(['range', 'sum', 'sortBy', 'zip', 'chunk', 'groupBy', 'dissoc', 'mergeRecords', 'toNum', 'dateParse', 'tMsg', 'dbAll', 'dbSelect', 'dbInsert', 'dbUpdate', 'dbDelete', 'apiFail', 'dbTx', 'handleActionError']);
 
 /** Keep lexical bindings distinct from the surrounding generated names. */
 export function genBindingName(name: string, bindings: Map<string, Binding>): string {
@@ -357,10 +357,13 @@ export function genExpr(e: SExpr, ctx: GenCtx): string {
           const chunks = args.map((x) => (x.kind === 'string' ? JSON.stringify(x.value) : `String(${genExpr(x, ctx)})`));
           return chunks.length === 0 ? '""' : `(${chunks.join(' + ')})`;
         }
+        // `!!` coerces like Boolean() but, unlike a call, lets TypeScript narrow
+        // through the operands, so a guard such as (and (not-null m) (> m 1))
+        // types m as non-null in the branch the checker's narrowScope admits.
         case 'and':
-          return `Boolean(${args.map((x) => `(${genExpr(x, ctx)})`).join(' && ')})`;
+          return `!!(${args.map((x) => `(${genExpr(x, ctx)})`).join(' && ')})`;
         case 'or':
-          return `Boolean(${args.map((x) => `(${genExpr(x, ctx)})`).join(' || ')})`;
+          return `!!(${args.map((x) => `(${genExpr(x, ctx)})`).join(' || ')})`;
         case 'count':
           return `(${list(0)}).length`;
         case 'not':
@@ -386,7 +389,8 @@ export function genExpr(e: SExpr, ctx: GenCtx): string {
         case 'to-fixed':
           return `Number(${a(1)}).toFixed(${a(0)})`;
         case 'to-num':
-          return `Number(${a(0)})`;
+          ctx.uses.helpers.add('toNum');
+          return `toNum(${a(0)})`;
         case 'to-str':
           return `String(${a(0)})`;
         case 'upper':
@@ -501,7 +505,8 @@ export function genExpr(e: SExpr, ctx: GenCtx): string {
         case 'date-iso':
           return `new Date(${a(0)}).toISOString()`;
         case 'date-parse':
-          return `Date.parse(${a(0)})`;
+          ctx.uses.helpers.add('dateParse');
+          return `dateParse(${a(0)})`;
         case 'clamp':
           return `Math.min(${a(1)}, Math.max(${a(0)}, ${a(2)}))`;
         case 'trunc': case 'sign': case 'sin': case 'cos': case 'tan':
