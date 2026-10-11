@@ -144,6 +144,19 @@ grhm.db
 `;
 
 /**
+ * npm 10 (bundled with every Node 22 LTS) crashes in its peer-dependency
+ * resolver ("Cannot read properties of null (reading 'edgesOut')") when the
+ * registry's latest vitest major differs from the one a fresh project pins:
+ * an optional-peer chain pulls both in and arborist dereferences a clobbered
+ * node. npm 11+ (Node 24) is fixed upstream. legacy-peer-deps skips that
+ * resolver; the scaffold's dependency set needs no automatic peers.
+ */
+export const PROJECT_NPMRC = `# npm 10 (Node 22) crashes resolving optional peer dependencies of the test
+# toolchain; npm 11+ (Node 24) does not. Remove once the project runs on npm 11+.
+legacy-peer-deps=true
+`;
+
+/**
  * Production image: compile + bundle at build time, then run the generated
  * server (serves dist/ with history-route fallback and hosts /api).
  * SQLite lives on a volume via GRHM_DB.

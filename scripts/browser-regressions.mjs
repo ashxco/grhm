@@ -29,7 +29,7 @@ try {
       (dialog :open opened :title "Settings" (btn "Last control") (btn "Disabled control" :disabled true))
       (link "Other page" :to (path "/other/{id}" :id ev)))
     (page "/other/{id}" other (txt "Other content"))
-    (page "/broken" broken (txt (json-parse "{")))
+    (page "/broken" broken (txt (json-parse (concat "" "{"))))
     (page "/nested" nested-page
       (btn "Open parent" (click (set opened true)))
       (dialog :open opened :title "Parent" (btn "Parent control")

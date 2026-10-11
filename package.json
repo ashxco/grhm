@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "GRHM: Generative Reactive Hypermedia Metalanguage. A machine-native semantic UI language that compiles to React + TypeScript + CSS.",
   "author": "Ash",
-  "homepage": "https://github.com/ashxco/grhm",
+  "homepage": "https://grhm.vercel.app",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ashxco/grhm.git"

@@ -36,6 +36,10 @@ The v0.2 reference implementation: language, compiler, tooling, and CLI, prepare
 - `grhm migrate` on an app without `(db ...)`/`(api ...)`/`(uploads)` and any project command run outside a project exit 2 with a one-line explanation instead of an `E900` internal error; the Node-version floor is reported the same way.
 - The VS Code extension manifest carries `repository`, `bugs`, `homepage`, and keywords, and `@vscode/vsce` is a devDependency so `npx @vscode/vsce package` works offline from a lockfile.
 
+### Fixed
+
+- Fresh projects install on Node 22: npm 10's peer-dependency resolver crashes (`Cannot read properties of null (reading 'edgesOut')`) when the registry's latest vitest major differs from the pinned one, so `grhm new` writes an `.npmrc` with `legacy-peer-deps=true` (npm 11+, bundled with Node 24, is fixed upstream).
+
 ### Security
 
 - The generated server ignores `GRHM_TEST_HOOKS=1` when `NODE_ENV=production` and logs one structured `config-warning`, so the rate-limit bypass and `POST /__grhm/reset` exist only when test hooks are active outside production.
