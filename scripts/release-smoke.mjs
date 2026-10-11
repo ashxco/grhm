@@ -19,6 +19,24 @@ function run(command, args, cwd = app) {
   assert.equal(result.status, 0, `${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}\n${result.error ?? ''}`);
   return result.stdout.trim();
 }
+// The scaffolded app installs from an empty npm cache, as a new user would.
+// A cache restored by CI has fed npm's arborist "edgesOut" crash, which the
+// debug log explains; on failure that log is appended to the assertion.
+const npmCache = path.join(temporary, 'npm-cache');
+async function npmInApp(args) {
+  try {
+    return run('npm', [...args, '--cache', npmCache]);
+  } catch (error) {
+    const logDir = path.join(npmCache, '_logs');
+    const names = await fs.readdir(logDir).catch(() => []);
+    const newest = names.sort().at(-1);
+    if (newest !== undefined) {
+      const log = await fs.readFile(path.join(logDir, newest), 'utf8');
+      error.message += `\n--- ${newest} (tail) ---\n${log.split('\n').slice(-80).join('\n')}`;
+    }
+    throw error;
+  }
+}
 async function stop() {
   if (container) { run('docker', ['stop', '--time', '15', identity]); return; }
   if (!child || child.exitCode !== null) return;
@@ -70,7 +88,7 @@ try {
     (api (get "/api/notes" (select notes))
       (post "/api/notes" (input (label string)) (insert notes :label body.label)))
     (page "/" home (heading "Release smoke")))`);
-  run('npm', ['install', '--no-audit', '--no-fund']);
+  await npmInApp(['install', '--no-audit', '--no-fund']);
   run(process.execPath, ['node_modules/grhm/dist/cli.js', 'reference']);
   run('npm', ['run', 'build']);
   if (container) {
@@ -95,7 +113,7 @@ try {
   assert.equal(await (await fetch(`${base}${url}`)).text(), 'persistent upload');
   await stop();
   if (!container) {
-    run('npm', ['prune', '--omit=dev', '--no-audit', '--no-fund']);
+    await npmInApp(['prune', '--omit=dev', '--no-audit', '--no-fund']);
     await assert.rejects(fs.access(path.join(app, 'node_modules/vite')));
     await assert.rejects(fs.access(path.join(app, 'node_modules/grhm')));
     standalone = true;
