@@ -1,0 +1,52 @@
+# Publishes the npm package when a version tag (v0.2.0, v0.3.0, ...) is pushed.
+#
+# NPM_TOKEN must be a granular access token of type "automation" (npmjs.com >
+# Access Tokens > Generate New Token > Granular, read/write on the grhm
+# package, with the bypass-2FA option so a non-interactive publish can run).
+# Store it as a repository secret named NPM_TOKEN. Publishing can also be done
+# locally: `npm run release:check && npm publish --provenance --access public`
+# from a clean checkout at the tagged commit.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  # Required for npm provenance attestations (Sigstore).
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: Check that the tag matches package.json
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm ci
+      # release:check runs the Chromium regressions among its gates.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run release:check
+      # A tag may be pushed after a local publish of the same version; re-running
+      # the release must then verify the gate and skip the publish, not fail.
+      - name: Check whether this version is already on npm
+        id: registry
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "grhm@${version}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "grhm@${version} is already published; skipping publish."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      # prepublishOnly would repeat release:check; the gate already ran above.
+      - if: steps.registry.outputs.published == 'false'
+        run: npm publish --provenance --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

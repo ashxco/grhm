@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { SExpr, opName, walkLists } from '../src/ast.js';
 import { compile } from '../src/codegen/index.js';
 import { CODE_DOCS } from '../src/diagnostics.js';
+import { format } from '../src/format.js';
 import { parse } from '../src/parser.js';
 import { MAX_PROTOCOL_BYTES } from '../src/limits.js';
 import { findReferences, resolveSymbolAt } from '../src/references.js';
@@ -16,6 +17,7 @@ import { DEFAULT_APP_GRHM, VITE_CONFIG } from '../src/scaffold.js';
 import { handleRequest } from '../src/server.js';
 import { GrhmProject } from '../src/sdk.js';
 import { genPlaywrightSpec, genVitestSpec, playwrightConfig } from '../src/testgen.js';
+import { VERSION } from '../src/version.js';
 
 /**
  * End-to-end tests for the tooling surfaces: the SDK/server protocol, the
@@ -598,6 +600,67 @@ describe('CLI scaffold and test flags', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('keeps VERSION in sync with package.json', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { version: string; engines: { node: string } };
+    expect(VERSION).toBe(pkg.version);
+    // The CLI refuses to run generated servers below 22.13; engines must not promise otherwise.
+    expect(pkg.engines.node).toBe('>=22.13');
+  });
+
+  it('scaffolds a canonical project that passes fmt --check and check, with a file: hint from a checkout', () => {
+    expect(format(parse(DEFAULT_APP_GRHM, 'app.grhm').nodes)).toBe(DEFAULT_APP_GRHM);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-new-check-'));
+    try {
+      const created = spawnSync('node', [CLI, 'new', dir], { encoding: 'utf8' });
+      expect(created.status, created.stderr).toBe(0);
+      expect(created.stdout).toContain('npm run dev');
+      // dist/cli.js runs from this checkout; a project outside it gets the absolute path, one inside gets a relative one.
+      expect(created.stdout).toContain(`npm pkg set 'devDependencies.grhm=file:${ROOT}'`);
+      fs.mkdirSync(path.join(ROOT, '.tmp-test'), { recursive: true });
+      const inside = fs.mkdtempSync(path.join(ROOT, '.tmp-test', 'grhm-new-inside-'));
+      try {
+        const nested = spawnSync('node', [CLI, 'new', inside], { encoding: 'utf8' });
+        expect(nested.status, nested.stderr).toBe(0);
+        expect(nested.stdout).toContain("npm pkg set 'devDependencies.grhm=file:../..'");
+      } finally {
+        fs.rmSync(inside, { recursive: true, force: true });
+      }
+      const fmt = spawnSync('node', [CLI, 'fmt', '--check'], { cwd: dir, encoding: 'utf8' });
+      expect(fmt.status, fmt.stdout + fmt.stderr).toBe(0);
+      expect(fmt.stdout).toContain('formatted');
+      const check = spawnSync('node', [CLI, 'check', '--json'], { cwd: dir, encoding: 'utf8' });
+      expect(check.status, check.stdout + check.stderr).toBe(0);
+      expect(JSON.parse(check.stdout)).toMatchObject({ schema: 1, ok: true, diagnostics: [] });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('explains a missing project and a frontend-only migrate with exit code 2 instead of an internal error', () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-no-project-'));
+    try {
+      const check = spawnSync('node', [CLI, 'check'], { cwd: empty, encoding: 'utf8' });
+      expect(check.status).toBe(2);
+      expect(check.stderr).toContain(`no grhm.json or app.grhm found in ${fs.realpathSync(empty)}`);
+      expect(check.stderr).toContain('grhm new');
+      expect(check.stderr).not.toContain('E900');
+      const asJson = spawnSync('node', [CLI, 'check', '--json'], { cwd: empty, encoding: 'utf8' });
+      expect(asJson.status).toBe(2);
+      expect(JSON.parse(asJson.stdout)).toMatchObject({ schema: 1, ok: false, error: expect.stringContaining('grhm new') });
+      const fmt = spawnSync('node', [CLI, 'fmt', '--check'], { cwd: empty, encoding: 'utf8' });
+      expect(fmt.status).toBe(2);
+      expect(fmt.stderr).not.toContain('Included file not found');
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+    // The scaffold declares no (db ...)/(api ...), so there is no server and nothing to migrate.
+    const migrate = spawnSync('node', [CLI, 'migrate'], { cwd: projectDir, encoding: 'utf8' });
+    expect(migrate.status).toBe(2);
+    expect(migrate.stderr).toContain('no database to migrate');
+    expect(migrate.stderr).not.toContain('E900');
+    expect(fs.existsSync(path.join(projectDir, 'src', 'gen', 'server.ts'))).toBe(false);
   });
 
   it('builds a fresh scaffold after changing to a custom outDir', () => {

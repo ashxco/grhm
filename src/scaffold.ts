@@ -1,9 +1,8 @@
 /** Templates written by `grhm new`. */
 
+/** Canonically formatted (format(parse(x)) === x), so a fresh project passes `grhm fmt --check`; a test enforces it. */
 export const DEFAULT_APP_GRHM = `(app my-app
-  (theme
-    (token primary "#4f46e5")
-    (token surface "#ffffff"))
+  (theme (token primary "#4f46e5") (token surface "#ffffff"))
 
   (state count 0)
 
@@ -13,8 +12,11 @@ export const DEFAULT_APP_GRHM = `(app my-app
       (txt "This page was compiled from app.grhm.")
       (txt "Count: " count)
       (h :gap 8
-        (btn "Increment" :variant primary (click (set count (+ count 1))))
-        (btn "Reset" (click (set count 0)))))))
+        (btn "Increment" :variant primary
+          (click
+            (set count (+ count 1))))
+        (btn "Reset"
+          (click (set count 0)))))))
 `;
 
 export const GRHM_JSON = `{
@@ -41,7 +43,8 @@ export function projectPackageJson(name: string, grhmDependency: string): string
         react: '^19.2.8',
         'react-dom': '^19.2.8',
       },
-      engines: { node: '^22.22.2 || >=24.15.0' },
+      // Same policy as the compiler: node:sqlite needs 22.13; 22.22+/24.15+ run the generated TypeScript without flags.
+      engines: { node: '>=22.13' },
       devDependencies: {
         '@types/node': '^26.1.2',
         '@types/react': '^19.2.18',

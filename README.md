@@ -6,6 +6,35 @@
 LLM or developer -> .grhm source -> canonical AST -> checker -> React/TS/CSS + node:http/SQLite server -> Vite + node -> browser
 ```
 
+## Installation
+
+GRHM requires Node 22.13 or newer (the generated server uses `node:sqlite`). Node 22.22+ or 24.15+ is recommended: those releases run the generated TypeScript without experimental flags, and CI tests both lines. The compiler itself has no runtime dependencies. Source and issues live at [github.com/ashxco/grhm](https://github.com/ashxco/grhm).
+
+From npm (once the `grhm` package is published; `npm i -D grhm` adds it to an existing project):
+
+```bash
+npx grhm new my-app      # scaffolds a project with grhm ^0.2.0 as a devDependency
+cd my-app
+npm install
+npm run dev              # compile + Vite dev server with hot reload
+```
+
+From a checkout, build the CLI first, then point the new project at that build with a `file:` dependency (the scaffold pins the npm release; `grhm new` prints this hint when it runs from a checkout):
+
+```bash
+git clone https://github.com/ashxco/grhm.git && cd grhm
+npm install
+npm run build            # emits dist/cli.js
+node dist/cli.js new my-app && cd my-app
+npm pkg set 'devDependencies.grhm=file:..'
+npm install
+npm run dev
+```
+
+The documentation site in [`site/dist`](./site/dist) (agent guide, examples, and the downloadable language reference) is deployed on Vercel; the public URL is TBD until the domain is attached. `npm run site:dev` serves the same content locally.
+
+A working example lives in [`examples/store`](./examples/store) — a four-page product catalog spanning six `.grhm` files, with an async resource, shared cart state, routing with parameters, components, design tokens, a cart dialog, tabs, a sortable table, catalog sorting written as GRHM functions, a newsletter form, motion, JavaScript interop, a SQLite-backed wishlist (database table, CRUD API, and mutations all declared in GRHM), and a browser test suite that exercises the full stack.
+
 ## Why
 
 Models generate verbose framework code and make locally plausible but structurally invalid edits. GRHM inverts the workflow:
@@ -16,21 +45,6 @@ Models generate verbose framework code and make locally plausible but structural
 - **Structural patching** — programs are modified with atomic, revision-checked patches against node IDs, not whole-file rewrites. Patches work across multi-file projects.
 - **Conventional output** — the compiler emits readable, strict-mode TypeScript/React/CSS that builds with ordinary tooling and can be maintained by hand if you stop using GRHM.
 - **Self-describing** — `grhm reference` prints a schema-generated language reference to give coding agents the compiler’s operation vocabulary.
-
-## Quick start
-
-```bash
-npm install
-npm run build
-
-# create and run a project
-node dist/cli.js new my-app
-cd my-app
-npm install
-npm run dev        # compile + vite dev server with hot reload
-```
-
-A working example lives in [`examples/store`](./examples/store) — a four-page product catalog spanning six `.grhm` files, with an async resource, shared cart state, routing with parameters, components, design tokens, a cart dialog, tabs, a sortable table, catalog sorting written as GRHM functions, a newsletter form, motion, JavaScript interop, a SQLite-backed wishlist (database table, CRUD API, and mutations all declared in GRHM), and a browser test suite that exercises the full stack.
 
 ## The language in one example
 
@@ -119,6 +133,8 @@ grhm repl                interactive evaluator for the pure core
 grhm start               run the production server (generated API + built dist/)
 grhm ast --json          canonical AST with stable node IDs
 grhm inspect --node <id> one node subtree, parent context, and file
+grhm migrate [--check]   apply database migrations (or validate and roll back)
+grhm db <operation>      backup, verify, or restore a SQLite snapshot
 grhm patch <file>        apply an atomic structural patch
 grhm fix [--dry-run]     apply the safe fixes diagnostics carry (--level review, --fix <id>,
                          --code <CODE>, --revision <rev>, --no-format)
@@ -130,7 +146,7 @@ grhm codes [CODE]        list all diagnostic codes, or explain one with worked r
 
 `grhm build` requires local TypeScript and Vite. It typechecks application sources and every generated module, including backend modules in custom output directories, before bundling. A missing test runner makes `grhm test` fail; use `--unit` or `--e2e` to select the intended suite.
 
-Exit codes: `0` success, `1` validation failure (`grhm fix` that leaves errors behind, `grhm codes` given an unknown code), `2` build/config failure (including bad `grhm fix` flags), `3` internal error.
+Exit codes: `0` success, `1` validation failure (`grhm fix` that leaves errors behind, `grhm codes` given an unknown code), `2` build/config failure (bad `grhm fix` flags, no `grhm.json`/`app.grhm` in the working directory, `grhm migrate` on an app without a generated server, Node below 22.13), `3` internal error.
 
 ## Diagnostics
 
@@ -231,7 +247,7 @@ The generated server is designed around a small, auditable threat model:
 
 ## Deployment and release checks
 
-Use Node 22.22.2+ on the 22.x line, or Node 24.15+ on the 24.x line, for the application toolchain and release checks. The generated SQLite server itself requires Node 22.13+; older 22.x releases need type stripping enabled, which the CLI handles. CI checks the supported toolchain versions.
+Node 22.13+ is required everywhere (`node:sqlite`); Node 22.22+ or 24.15+ is recommended because those releases run the generated TypeScript without experimental flags, and CI tests both lines. On Node 22.13–22.17 the CLI and the scaffolded scripts add `--experimental-strip-types` themselves. Below 22.13 the CLI exits 2 with a message instead of starting a server.
 
 After `npm install` creates `package-lock.json`, the scaffolded Dockerfile uses `npm ci`, binds port 8787 on all container interfaces, and runs as the unprivileged `node` user. It prunes development dependencies and starts `grhm-start.mjs` directly. This launcher uses the generated API server or the standalone static server for frontend-only apps; production serving does not require Vite or the compiler. Mount a persistent volume at `/data` for both SQLite and uploads; host bind mounts must be writable by UID 1000. Runtime secrets belong in environment variables, not the image. The generated `.dockerignore` excludes environment files, local databases, and uploads.
 
@@ -296,9 +312,13 @@ npm run evals    # corpus scorecard: compile/canonical, diagnostic quality, fix 
 
 The parity suite checks 1,000 bounded expressions across five reproducible seeds, plus fixed edge cases for coercion, nulls, callbacks, Unicode, and numeric boundaries. A mismatch reports its seed, case, and minimized expression. To replay or extend a run, use `GRHM_PARITY_SEED=42 GRHM_PARITY_CASES=5000 npm run test:parity`. The parity gate derives required operation coverage from the schema. Randomness and wall-clock reads use controlled providers in fixed tests and are excluded from generated expressions.
 
-CI ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs the full suite plus the example app end-to-end, including the generated Playwright tests in a real browser.
+CI ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs the full suite plus the example app end-to-end, including the generated Playwright tests in a real browser, and packages the VS Code extension ([`editors/vscode`](./editors/vscode)) as a `.vsix` artifact. Releases are tagged `vX.Y.Z` after bumping `package.json` and `src/version.ts` together (a test keeps them equal); [`release.yml`](./.github/workflows/release.yml) runs `release:check` and publishes to npm with provenance using an `NPM_TOKEN` granular automation-token secret. Changes are recorded in [CHANGELOG.md](./CHANGELOG.md).
 
 Repository layout, architecture notes, and current limitations are documented in [AGENTS.md](./AGENTS.md).
+
+### Site deployment
+
+The site is a prebuilt static bundle in `site/dist` (tracked; regenerate with `npm run site:sync`, never edit the generated files by hand) with pushState routing in `app.js`. On Vercel, import the GitHub repository and deploy: every setting comes from [`vercel.json`](./vercel.json) — no install or build step, `site/dist` as the output directory, clean URLs, and a rewrite of extension-less paths to `index.html` so `/docs/...` and `/examples` resolve on reload, while `/demo`, `/examples/*.grhm`, `/fonts`, `language-reference.txt`, `reference.json`, and the other assets are served as files.
 
 ## Status
 

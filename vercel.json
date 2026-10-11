@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "",
+  "buildCommand": "",
+  "outputDirectory": "site/dist",
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/((?!demo(?:/|$)|examples/|fonts/)[^.]*)",
+      "destination": "/index.html"
+    }
+  ]
+}
