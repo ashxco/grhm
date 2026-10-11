@@ -4,12 +4,27 @@
   "description": "Language support for GRHM (.grhm): diagnostics, hover, completion, definitions, references, rename, and formatting via the grhm LSP.",
   "version": "0.2.0",
   "publisher": "grhm",
+  "homepage": "https://github.com/ashxco/grhm/tree/main/editors/vscode",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ashxco/grhm.git",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/ashxco/grhm/issues"
+  },
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Programming Languages"
+  ],
+  "keywords": [
+    "grhm",
+    "lsp",
+    "language-server",
+    "formatter"
   ],
   "main": "./extension.js",
   "activationEvents": [
@@ -51,5 +66,8 @@
   },
   "scripts": {
     "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^4.0.0"
   }
 }

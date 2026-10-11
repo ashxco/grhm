@@ -273,3 +273,44 @@ describe('production runtime boundaries', () => {
     expect(fs.readFileSync(path.join(root, 'completed'), 'utf8')).toBe('yes');
   });
 });
+
+describe('production test-hook boundary', () => {
+  const hooksApp = `(app hooks
+    (db (table items (id auto) (label string)))
+    (api (get "/api/items" (select items)) (post "/api/items" (insert items :label body.label)))
+    (data (resource items "/api/items" :default ()))
+    (page "/" home (each item items.data (txt item.label))))`;
+
+  async function waitFor(read: () => string, text: string): Promise<void> {
+    for (let i = 0; i < 100 && !read().includes(text); i++) await delay(10);
+  }
+
+  it('ignores GRHM_TEST_HOOKS under NODE_ENV=production and says so once', async () => {
+    const root = emit(hooksApp);
+    const production = await start(root, { GRHM_TEST_HOOKS: '1', NODE_ENV: 'production', GRHM_RATE_LIMIT: '3' });
+    await waitFor(production.errors, 'config-warning');
+    const warnings = production.errors().split('\n').filter((line) => line.includes('config-warning'));
+    expect(warnings).toHaveLength(1);
+    expect(JSON.parse(warnings[0]!)).toMatchObject({ schema: 1, kind: 'config-warning', setting: 'GRHM_TEST_HOOKS' });
+    // The reset route does not exist, and the rate limiter is live.
+    const reset = await fetch(`${production.base}/__grhm/reset`, { method: 'POST', headers });
+    expect(reset.status).toBe(404);
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i++) statuses.push((await fetch(`${production.base}/api/items`)).status);
+    expect(statuses).toContain(429);
+    expect(statuses[0]).toBe(200);
+  });
+
+  it('keeps the reset route and the rate-limit bypass for test runs outside production', async () => {
+    const root = emit(hooksApp);
+    const testing = await start(root, { GRHM_TEST_HOOKS: '1', GRHM_RATE_LIMIT: '3' });
+    const reset = await fetch(`${testing.base}/__grhm/reset`, { method: 'POST', headers });
+    expect(reset.status).toBe(200);
+    for (let i = 0; i < 6; i++) expect((await fetch(`${testing.base}/api/items`)).status).toBe(200);
+    expect(testing.errors()).not.toContain('config-warning');
+    // Without the setting, production and test environments behave alike: no hooks, no warning.
+    const plain = await start(root, { NODE_ENV: 'production' });
+    expect((await fetch(`${plain.base}/__grhm/reset`, { method: 'POST', headers })).status).toBe(404);
+    expect(plain.errors()).not.toContain('config-warning');
+  });
+});

@@ -58,6 +58,30 @@ function jsonOut(payload: unknown): void {
   process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
 }
 
+/** A usage or configuration failure the user can act on: one line and exit code 2, never an E900 stack. */
+class CliError extends Error {
+  constructor(message: string, readonly exitCode = 2) {
+    super(message);
+  }
+}
+
+/** The project around the working directory, or a clear failure when there is none. */
+function openProject(): GrhmProject {
+  const project = GrhmProject.fromCwd(process.cwd());
+  const { root, entry } = project.config;
+  if (!fs.existsSync(path.join(root, 'grhm.json')) && !fs.existsSync(path.join(root, entry))) {
+    throw new CliError(`no grhm.json or ${entry} found in ${root}; run this inside a GRHM project, or create one with grhm new <name>`);
+  }
+  return project;
+}
+
+/** The GRHM source checkout this CLI runs from (dist/ built beside src/), or undefined for an installed package. */
+function checkoutRoot(): string | undefined {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const installed = path.basename(path.dirname(root)) === 'node_modules';
+  return !installed && fs.existsSync(path.join(root, 'src', 'cli.ts')) ? root : undefined;
+}
+
 function findViteBin(root: string): string | undefined {
   const bin = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'vite.cmd' : 'vite');
   return fs.existsSync(bin) ? bin : undefined;
@@ -66,7 +90,9 @@ function findViteBin(root: string): string | undefined {
 /** Extra node args needed to execute generated TypeScript directly. */
 function nodeTsArgs(): string[] {
   const [major, minor] = process.versions.node.split('.').map(Number);
-  if ((major ?? 0) < 22 || (major === 22 && (minor ?? 0) < 13)) throw new Error('Generated servers require Node 22.13 or newer; use a maintained Node release.');
+  if ((major ?? 0) < 22 || (major === 22 && (minor ?? 0) < 13)) {
+    throw new CliError(`generated servers require Node 22.13 or newer (22.22+ or 24.15+ recommended); this is Node ${process.versions.node}`);
+  }
   const features = process.features as { typescript?: unknown };
   return features.typescript !== undefined && features.typescript !== false ? [] : ['--experimental-strip-types'];
 }
@@ -120,11 +146,18 @@ function cmdNew(args: string[]): number {
   fs.writeFileSync(path.join(dir, '.dockerignore'), DOCKERIGNORE);
   fs.writeFileSync(path.join(dir, 'grhm-start.mjs'), START_SCRIPT);
   process.stdout.write(`Created ${name}. Next steps:\n  cd ${name}\n  npm install\n  npm run dev\n`);
+  const checkout = checkoutRoot();
+  if (checkout !== undefined) {
+    // Relative when the project sits inside the checkout (the usual `node dist/cli.js new x` case), absolute otherwise.
+    const inside = !path.relative(checkout, dir).startsWith('..');
+    const target = inside ? path.relative(dir, checkout) : checkout;
+    process.stdout.write(`The project depends on grhm ^${VERSION} from npm; to use this checkout instead, run: npm pkg set 'devDependencies.grhm=file:${target}'\n`);
+  }
   return 0;
 }
 
 function cmdCheck(json: boolean): number {
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const summary = project.check();
   if (json) {
     jsonOut({ schema: 1, ok: summary.ok, revision: summary.revision, diagnostics: summary.diagnostics });
@@ -144,7 +177,7 @@ function cmdCheck(json: boolean): number {
 function cmdFmt(json: boolean, rest: string[]): number {
   const checkOnly = rest.includes('--check');
   const style: NameStyle = rest.includes('--compact') ? 'compact' : rest.includes('--descriptive') ? 'descriptive' : 'preserve';
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const { changed, diagnostics } = project.formatAll(style, checkOnly);
   if (hasErrors(diagnostics)) {
     if (json) jsonOut({ schema: 1, ok: false, diagnostics });
@@ -184,7 +217,7 @@ function compileAndWrite(project: GrhmProject, json: boolean): { ok: boolean; wr
 }
 
 function cmdBuild(json: boolean): number {
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const started = Date.now();
   const result = project.compile();
   const written: string[] = [];
@@ -243,7 +276,7 @@ function cmdBuild(json: boolean): number {
 }
 
 function cmdDev(): number {
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const first = compileAndWrite(project, false);
   if (!first.ok) {
     process.stderr.write('dev: initial compile failed; fix diagnostics and save to retry\n');
@@ -323,7 +356,7 @@ function cmdTest(json: boolean, rest: string[]): number {
     else process.stderr.write(`test: ${error}\n`);
     return 2;
   }
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const { spec, unitSpec, diagnostics } = project.testSpec();
   if (hasErrors(diagnostics)) {
     if (json) jsonOut({ schema: 1, ok: false, diagnostics });
@@ -396,7 +429,7 @@ function cmdTest(json: boolean, rest: string[]): number {
 }
 
 function cmdAst(json: boolean): number {
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const loaded = project.load();
   if (hasErrors(loaded.diagnostics)) {
     if (json) jsonOut({ schema: 1, ok: false, diagnostics: loaded.diagnostics });
@@ -420,7 +453,7 @@ function cmdInspect(args: string[], json: boolean): number {
     process.stderr.write('usage: grhm inspect --node <id>\n');
     return 2;
   }
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const found = project.inspect(nodeId);
   if (found === undefined) {
     if (json) jsonOut({ schema: 1, ok: false, error: `no node with ID "${nodeId}"` });
@@ -446,7 +479,7 @@ function cmdPatch(args: string[], json: boolean): number {
     process.stderr.write('usage: grhm patch <patch-file> [--json]\n');
     return 2;
   }
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const patchSource = fs.readFileSync(patchFile, 'utf8');
   const result = project.applyPatch(patchSource);
   if (json) {
@@ -507,7 +540,7 @@ function cmdFix(args: string[], json: boolean): number {
   }
   if (fix.length > 0) request.fix = fix;
   if (codes.length > 0) request.codes = codes;
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const result = project.applyFixes(request, !dryRun);
   if (json) {
     // A dry run reports the text it would have written; after a real one the files on disk are the source of truth.
@@ -593,7 +626,7 @@ function cmdRepl(): number {
 
 /** Production serving: run the generated API server, which also serves dist/. */
 function cmdStart(): number {
-  const project = GrhmProject.fromCwd(process.cwd());
+  const project = openProject();
   const serverPath = path.join(project.config.root, project.config.outDir, 'server.ts');
   if (!fs.existsSync(path.join(project.config.root, 'dist', 'index.html'))) {
     process.stderr.write('start: dist/index.html not found — run `grhm build` (with vite installed) first\n');
@@ -690,7 +723,7 @@ commands:
   ast                 print the canonical AST as JSON
   inspect --node <id> print one node, its parent, and its file
   migrate [--check]   apply database migrations (or validate and roll back)
-  db <operation>     backup, verify, or restore a SQLite snapshot
+  db <operation>      backup, verify, or restore a SQLite snapshot
   patch <file>        apply a structural patch to the program
   fix [--dry-run]     apply the safe fixes diagnostics carry; --level review,
       --fix <id>, --code <CODE>, --revision <rev>, --no-format
@@ -742,10 +775,12 @@ export function main(argv: string[]): number {
           process.stderr.write('usage: grhm migrate [--check]\n');
           return 2;
         }
-        const project = GrhmProject.fromCwd(process.cwd());
+        const project = openProject();
         const result = project.compile();
         if (hasErrors(result.diagnostics)) { printDiagnostics(project, result.diagnostics); return 1; }
-        if (!result.files.has('server.ts')) throw new Error('This project has no database server');
+        if (!result.files.has('server.ts')) {
+          throw new CliError('migrate: this app declares no (db ...), (api ...), or (uploads), so no server is generated and there is no database to migrate');
+        }
         project.writeArtifacts(result.files);
         const outcome = spawnSync(process.execPath, [...nodeTsArgs(), path.join(project.config.root, project.config.outDir, 'server.ts')], {
           cwd: project.config.root, stdio: 'inherit', env: { ...process.env, GRHM_MIGRATE: args.includes('--check') ? 'check' : 'apply' },
@@ -776,6 +811,11 @@ export function main(argv: string[]): number {
         return command === undefined || command === 'help' || command === '--help' ? 0 : 2;
     }
   } catch (err) {
+    if (err instanceof CliError) {
+      if (json) jsonOut({ schema: 1, ok: false, error: err.message });
+      else process.stderr.write(`error: ${err.message}\n`);
+      return err.exitCode;
+    }
     const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
     if (json) jsonOut({ schema: 1, ok: false, code: 'E900', error: message });
     else process.stderr.write(`internal error (E900): ${message}\n`);

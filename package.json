@@ -2,6 +2,15 @@
   "name": "grhm",
   "version": "0.2.0",
   "description": "GRHM: Generative Reactive Hypermedia Metalanguage. A machine-native semantic UI language that compiles to React + TypeScript + CSS.",
+  "author": "Ash",
+  "homepage": "https://github.com/ashxco/grhm",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ashxco/grhm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ashxco/grhm/issues"
+  },
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -25,7 +34,8 @@
   },
   "files": [
     "dist",
-    "corpus"
+    "corpus",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-runtime.mjs",
@@ -44,10 +54,11 @@
     "test:package": "node scripts/release-smoke.mjs",
     "test:container": "node scripts/release-smoke.mjs --container",
     "release:check": "npm audit --audit-level=high && npm run check && npm run build && npm test && npm run bench && npm run test:load && npm run evals && npm run site:sync && npm run site:check && npm run test:browser && npm run test:package",
-    "test:load": "node scripts/bench-server.mjs"
+    "test:load": "node scripts/bench-server.mjs",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",

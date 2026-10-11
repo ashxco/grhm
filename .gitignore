@@ -5,3 +5,7 @@ dist/
 examples/*/node_modules/
 examples/*/dist/
 examples/*/src/gen/
+editors/vscode/*.vsix
+# CI copies the root README and LICENSE into the extension before packaging it.
+editors/vscode/README.md
+editors/vscode/LICENSE
