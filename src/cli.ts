@@ -153,7 +153,7 @@ function cmdNew(args: string[]): number {
     // Relative when the project sits inside the checkout (the usual `node dist/cli.js new x` case), absolute otherwise.
     const inside = !path.relative(checkout, dir).startsWith('..');
     const target = inside ? path.relative(dir, checkout) : checkout;
-    process.stdout.write(`The project depends on grhm ^${VERSION} from npm; to use this checkout instead, run: npm pkg set 'devDependencies.grhm=file:${target}'\n`);
+    process.stdout.write(`The project depends on @ashxsf/grhm ^${VERSION} from npm; to use this checkout instead, run: npm pkg set 'devDependencies.@ashxsf/grhm=file:${target}'\n`);
   }
   return 0;
 }

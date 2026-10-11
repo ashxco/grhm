@@ -1,5 +1,5 @@
 {
-  "name": "grhm",
+  "name": "@ashxsf/grhm",
   "version": "0.2.0",
   "description": "GRHM: Generative Reactive Hypermedia Metalanguage. A machine-native semantic UI language that compiles to React + TypeScript + CSS.",
   "author": "Ash",
@@ -37,6 +37,9 @@
     "corpus",
     "CHANGELOG.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-runtime.mjs",
     "check": "tsc --noEmit",

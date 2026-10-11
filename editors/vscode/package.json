@@ -56,7 +56,7 @@
         "grhm.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the grhm CLI used to start the language server. When empty, the workspace's node_modules/.bin/grhm is used, falling back to `npx grhm`."
+          "description": "Path to the grhm CLI used to start the language server. When empty, the workspace's node_modules/.bin/grhm is used, falling back to `npx @ashxsf/grhm lsp` (the npm package is `@ashxsf/grhm`; its binary is `grhm`)."
         }
       }
     }

@@ -50,7 +50,7 @@ export function projectPackageJson(name: string, grhmDependency: string): string
         '@types/react': '^19.2.18',
         '@types/react-dom': '^19.2.4',
         '@vitejs/plugin-react': '^6.0.5',
-        grhm: grhmDependency,
+        '@ashxsf/grhm': grhmDependency,
         jsdom: '^30.0.1',
         typescript: '^7.0.2',
         vite: '^8.2.1',
