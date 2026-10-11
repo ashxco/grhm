@@ -22,7 +22,7 @@ The v0.2 reference implementation: language, compiler, tooling, and CLI, prepare
 - **Boolean conditions** (`068adb4`). `if`/`when`/`cond` tests and `and`/`or`/`not` operands must infer to boolean (E111) with wrap fixes; `and`/`or` lower to `!!(...)` so TypeScript narrows guarded values.
 - **Throwing-op checks** (`068adb4`). `json-parse`, `chunk`, `regex-*`, `url-decode`, and `date-iso` are verified on literal operands at check time (E109) and warn (W801) on dynamic operands outside `(attempt ...)`, propagated through callers.
 - **Nullable `to-num`** (`068adb4`). `to-num` and `date-parse` return `number | null` instead of `NaN`, mirrored in the interpreter.
-- `CHANGELOG.md`, and package metadata for npm: `repository`, `homepage`, `bugs`, and `author`.
+- `CHANGELOG.md`, and package metadata for npm: `repository`, `homepage`, `bugs`, and `author`. The package is published as `@ashxsf/grhm` with `publishConfig.access: public`, because npm rejects the bare name `grhm` as too similar to existing packages (`grpc`, `gm`); the CLI binary remains `grhm`, so `npx grhm <command>` works inside a project and `npx @ashxsf/grhm new <dir>` creates one.
 - A tag-triggered release workflow ([`.github/workflows/release.yml`](./.github/workflows/release.yml)) that runs `release:check` and publishes to npm with provenance, and a CI job that packages the VS Code extension with `@vscode/vsce` and uploads the `.vsix`.
 - `vercel.json` for the static documentation site (`site/dist`, no build step, clean URLs, history-route fallback).
 - `grhm new` prints how to point a fresh project at a source checkout with a `file:` dependency when the CLI runs from one.

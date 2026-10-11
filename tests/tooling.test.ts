@@ -577,8 +577,8 @@ describe('CLI scaffold and test flags', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grhm-static-start-'));
     try {
       execSync(`node ${JSON.stringify(CLI)} new ${JSON.stringify(dir)}`, { stdio: 'pipe' });
-      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { devDependencies: { grhm: string } };
-      expect(pkg.devDependencies.grhm).toBe('^0.2.0');
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { devDependencies: Record<string, string> };
+      expect(pkg.devDependencies['@ashxsf/grhm']).toBe('^0.2.0');
       expect(compile(DEFAULT_APP_GRHM).files.has('server.ts')).toBe(false);
       fs.mkdirSync(path.join(dir, 'dist'));
       fs.writeFileSync(path.join(dir, 'dist', 'index.html'), '<!doctype html>');
@@ -602,9 +602,13 @@ describe('CLI scaffold and test flags', () => {
     }
   });
 
-  it('keeps VERSION in sync with package.json', () => {
-    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { version: string; engines: { node: string } };
+  it('keeps VERSION in sync with package.json and publishes the scoped package publicly', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { name: string; version: string; bin: Record<string, string>; publishConfig: { access: string }; engines: { node: string } };
     expect(VERSION).toBe(pkg.version);
+    // npm rejected the bare name as too similar to existing packages; the scoped name needs public access, and the bin stays `grhm`.
+    expect(pkg.name).toBe('@ashxsf/grhm');
+    expect(pkg.publishConfig).toEqual({ access: 'public' });
+    expect(Object.keys(pkg.bin)).toEqual(['grhm']);
     // The CLI refuses to run generated servers below 22.13; engines must not promise otherwise.
     expect(pkg.engines.node).toBe('>=22.13');
   });
@@ -619,13 +623,13 @@ describe('CLI scaffold and test flags', () => {
       // npm 10 (Node 22) crashes resolving the test toolchain's optional peers; the scaffold opts out.
       expect(fs.readFileSync(path.join(dir, '.npmrc'), 'utf8')).toContain('legacy-peer-deps=true');
       // dist/cli.js runs from this checkout; a project outside it gets the absolute path, one inside gets a relative one.
-      expect(created.stdout).toContain(`npm pkg set 'devDependencies.grhm=file:${ROOT}'`);
+      expect(created.stdout).toContain(`npm pkg set 'devDependencies.@ashxsf/grhm=file:${ROOT}'`);
       fs.mkdirSync(path.join(ROOT, '.tmp-test'), { recursive: true });
       const inside = fs.mkdtempSync(path.join(ROOT, '.tmp-test', 'grhm-new-inside-'));
       try {
         const nested = spawnSync('node', [CLI, 'new', inside], { encoding: 'utf8' });
         expect(nested.status, nested.stderr).toBe(0);
-        expect(nested.stdout).toContain("npm pkg set 'devDependencies.grhm=file:../..'");
+        expect(nested.stdout).toContain("npm pkg set 'devDependencies.@ashxsf/grhm=file:../..'");
       } finally {
         fs.rmSync(inside, { recursive: true, force: true });
       }

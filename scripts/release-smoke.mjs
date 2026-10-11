@@ -54,7 +54,7 @@ async function start(restart = false) {
     base = `http://${run('docker', ['port', identity, '8787/tcp'])}`;
   } else {
     logs = '';
-    child = spawn(process.execPath, standalone ? ['--experimental-strip-types', 'grhm-start.mjs'] : ['node_modules/grhm/dist/cli.js', 'start'], {
+    child = spawn(process.execPath, standalone ? ['--experimental-strip-types', 'grhm-start.mjs'] : ['node_modules/@ashxsf/grhm/dist/cli.js', 'start'], {
       cwd: app, env: { ...process.env, PORT: '0', HOST: '127.0.0.1', GRHM_QUIET: '1', GRHM_DB: path.join(app, 'test.db'), GRHM_UPLOADS: path.join(app, 'uploads') },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -76,12 +76,14 @@ async function start(restart = false) {
 }
 try {
   const packed = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', temporary], repository))[0];
+  assert.equal(packed.name, '@ashxsf/grhm');
+  assert.equal(packed.filename, `ashxsf-grhm-${packed.version}.tgz`);
   assert.ok(packed.files.some((file) => file.path === 'dist/cli.js'));
   assert.ok(!packed.files.some((file) => file.path.startsWith('node_modules/')));
   run(process.execPath, [path.join(repository, 'dist/cli.js'), 'new', app], temporary);
   await fs.copyFile(path.join(temporary, packed.filename), path.join(app, 'grhm.tgz'));
   const manifest = JSON.parse(await fs.readFile(path.join(app, 'package.json'), 'utf8'));
-  manifest.devDependencies.grhm = 'file:./grhm.tgz';
+  manifest.devDependencies['@ashxsf/grhm'] = 'file:./grhm.tgz';
   await fs.writeFile(path.join(app, 'package.json'), JSON.stringify(manifest));
   await fs.writeFile(path.join(app, 'app.grhm'), `(app smoke
     (db (table notes (id auto) (label string)))
@@ -90,7 +92,7 @@ try {
       (post "/api/notes" (input (label string)) (insert notes :label body.label)))
     (page "/" home (heading "Release smoke")))`);
   await npmInApp(['install', '--no-audit', '--no-fund']);
-  run(process.execPath, ['node_modules/grhm/dist/cli.js', 'reference']);
+  run(process.execPath, ['node_modules/@ashxsf/grhm/dist/cli.js', 'reference']);
   run('npm', ['run', 'build']);
   if (container) {
     console.log('Building scaffolded Docker image…');
@@ -106,7 +108,7 @@ try {
   const { url } = await uploaded.json();
   if (container) {
     assert.equal(run('docker', ['exec', identity, 'id', '-u']), '1000');
-    run('docker', ['exec', identity, 'node', '-e', "const fs=require('node:fs'); if (fs.existsSync('node_modules/vite') || fs.existsSync('node_modules/grhm')) process.exit(1)"]);
+    run('docker', ['exec', identity, 'node', '-e', "const fs=require('node:fs'); if (fs.existsSync('node_modules/vite') || fs.existsSync('node_modules/@ashxsf/grhm')) process.exit(1)"]);
   }
   await stop();
   base = await start(true);
@@ -116,7 +118,7 @@ try {
   if (!container) {
     await npmInApp(['prune', '--omit=dev', '--no-audit', '--no-fund']);
     await assert.rejects(fs.access(path.join(app, 'node_modules/vite')));
-    await assert.rejects(fs.access(path.join(app, 'node_modules/grhm')));
+    await assert.rejects(fs.access(path.join(app, 'node_modules/@ashxsf/grhm')));
     standalone = true;
     base = await start();
     assert.deepEqual(await (await fetch(base + '/api/notes')).json(), [{ id: 1, label: 'persisted' }]);

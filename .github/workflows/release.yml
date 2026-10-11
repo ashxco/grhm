@@ -1,7 +1,7 @@
 # Publishes the npm package when a version tag (v0.2.0, v0.3.0, ...) is pushed.
 #
 # NPM_TOKEN must be a granular access token of type "automation" (npmjs.com >
-# Access Tokens > Generate New Token > Granular, read/write on the grhm
+# Access Tokens > Generate New Token > Granular, read/write on the @ashxsf/grhm
 # package, with the bypass-2FA option so a non-interactive publish can run).
 # Store it as a repository secret named NPM_TOKEN. Publishing can also be done
 # locally: `npm run release:check && npm publish --provenance --access public`
@@ -39,9 +39,9 @@ jobs:
         id: registry
         run: |
           version="$(node -p "require('./package.json').version")"
-          if npm view "grhm@${version}" version >/dev/null 2>&1; then
+          if npm view "@ashxsf/grhm@${version}" version >/dev/null 2>&1; then
             echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "grhm@${version} is already published; skipping publish."
+            echo "@ashxsf/grhm@${version} is already published; skipping publish."
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi

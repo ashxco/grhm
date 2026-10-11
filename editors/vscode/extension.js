@@ -20,7 +20,7 @@ function serverCommand(workspaceRoot) {
     const local = path.join(workspaceRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'grhm.cmd' : 'grhm');
     if (fs.existsSync(local)) return { command: local, args: ['lsp'] };
   }
-  return { command: 'npx', args: ['grhm', 'lsp'] };
+  return { command: 'npx', args: ['@ashxsf/grhm', 'lsp'] };
 }
 
 function activate(context) {

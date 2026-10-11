@@ -10,10 +10,10 @@ LLM or developer -> .grhm source -> canonical AST -> checker -> React/TS/CSS + n
 
 GRHM requires Node 22.13 or newer (the generated server uses `node:sqlite`). Node 22.22+ or 24.15+ is recommended: those releases run the generated TypeScript without experimental flags, and CI tests both lines. The compiler itself has no runtime dependencies. Source and issues live at [github.com/ashxco/grhm](https://github.com/ashxco/grhm).
 
-From npm (once the `grhm` package is published; `npm i -D grhm` adds it to an existing project):
+From npm, the package is `@ashxsf/grhm` (npm rejects the bare name `grhm` as too similar to existing packages). Its binary is still `grhm`, so `npx grhm <command>` works inside a project; `npm i -D @ashxsf/grhm` adds it to an existing one:
 
 ```bash
-npx grhm new my-app      # scaffolds a project with grhm ^0.2.0 as a devDependency
+npx @ashxsf/grhm new my-app   # scaffolds a project with @ashxsf/grhm ^0.2.0 as a devDependency
 cd my-app
 npm install
 npm run dev              # compile + Vite dev server with hot reload
@@ -28,7 +28,7 @@ git clone https://github.com/ashxco/grhm.git && cd grhm
 npm install
 npm run build            # emits dist/cli.js
 node dist/cli.js new my-app && cd my-app
-npm pkg set 'devDependencies.grhm=file:..'
+npm pkg set 'devDependencies.@ashxsf/grhm=file:..'
 npm install
 npm run dev
 ```
