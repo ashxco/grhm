@@ -19,6 +19,8 @@ npm install
 npm run dev              # compile + Vite dev server with hot reload
 ```
 
+The scaffold includes an `.npmrc` with `legacy-peer-deps=true`: npm 10, bundled with every Node 22 LTS, crashes while resolving the test toolchain's optional peer dependencies (`Cannot read properties of null (reading 'edgesOut')`) whenever the registry's latest vitest major differs from the pinned one; npm 11+ (Node 24) has the fix. Delete the file once the project runs on npm 11 or newer.
+
 From a checkout, build the CLI first, then point the new project at that build with a `file:` dependency (the scaffold pins the npm release; `grhm new` prints this hint when it runs from a checkout):
 
 ```bash
@@ -31,7 +33,7 @@ npm install
 npm run dev
 ```
 
-The documentation site in [`site/dist`](./site/dist) (agent guide, examples, and the downloadable language reference) is deployed on Vercel; the public URL is TBD until the domain is attached. `npm run site:dev` serves the same content locally.
+The documentation site in [`site/dist`](./site/dist) (agent guide, examples, and the downloadable language reference) is deployed on Vercel at [grhm.vercel.app](https://grhm.vercel.app). `npm run site:dev` serves the same content locally.
 
 A working example lives in [`examples/store`](./examples/store) — a four-page product catalog spanning six `.grhm` files, with an async resource, shared cart state, routing with parameters, components, design tokens, a cart dialog, tabs, a sortable table, catalog sorting written as GRHM functions, a newsletter form, motion, JavaScript interop, a SQLite-backed wishlist (database table, CRUD API, and mutations all declared in GRHM), and a browser test suite that exercises the full stack.
 

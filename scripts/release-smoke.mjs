@@ -19,9 +19,9 @@ function run(command, args, cwd = app) {
   assert.equal(result.status, 0, `${command} ${args.join(' ')}\n${result.stdout}\n${result.stderr}\n${result.error ?? ''}`);
   return result.stdout.trim();
 }
-// The scaffolded app installs from an empty npm cache, as a new user would.
-// A cache restored by CI has fed npm's arborist "edgesOut" crash, which the
-// debug log explains; on failure that log is appended to the assertion.
+// The scaffolded app installs from an empty npm cache, as a new user would;
+// on failure npm's debug log is printed, since an arborist crash says nothing
+// useful on stderr.
 const npmCache = path.join(temporary, 'npm-cache');
 async function npmInApp(args) {
   try {
@@ -32,7 +32,8 @@ async function npmInApp(args) {
     const newest = names.sort().at(-1);
     if (newest !== undefined) {
       const log = await fs.readFile(path.join(logDir, newest), 'utf8');
-      error.message += `\n--- ${newest} (tail) ---\n${log.split('\n').slice(-80).join('\n')}`;
+      // The assertion's stack was captured at creation, so print rather than append.
+      console.error(`--- npm debug log ${newest} (tail) ---\n${log.split('\n').slice(-120).join('\n')}`);
     }
     throw error;
   }

@@ -616,6 +616,8 @@ describe('CLI scaffold and test flags', () => {
       const created = spawnSync('node', [CLI, 'new', dir], { encoding: 'utf8' });
       expect(created.status, created.stderr).toBe(0);
       expect(created.stdout).toContain('npm run dev');
+      // npm 10 (Node 22) crashes resolving the test toolchain's optional peers; the scaffold opts out.
+      expect(fs.readFileSync(path.join(dir, '.npmrc'), 'utf8')).toContain('legacy-peer-deps=true');
       // dist/cli.js runs from this checkout; a project outside it gets the absolute path, one inside gets a relative one.
       expect(created.stdout).toContain(`npm pkg set 'devDependencies.grhm=file:${ROOT}'`);
       fs.mkdirSync(path.join(ROOT, '.tmp-test'), { recursive: true });

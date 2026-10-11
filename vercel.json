@@ -7,8 +7,8 @@
   "cleanUrls": true,
   "rewrites": [
     {
-      "source": "/((?!demo(?:/|$)|examples/|fonts/)[^.]*)",
-      "destination": "/index.html"
+      "source": "/:path([^.]*)",
+      "destination": "/"
     }
   ]
 }

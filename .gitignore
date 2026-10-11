@@ -9,3 +9,5 @@ editors/vscode/*.vsix
 # CI copies the root README and LICENSE into the extension before packaging it.
 editors/vscode/README.md
 editors/vscode/LICENSE
+.vercel
+.env*

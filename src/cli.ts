@@ -36,6 +36,7 @@ import {
   GRHM_JSON,
   MAIN_TSX,
   PROJECT_GITIGNORE,
+  PROJECT_NPMRC,
   PROJECT_TSCONFIG,
   START_SCRIPT,
   VITE_CONFIG,
@@ -142,6 +143,7 @@ function cmdNew(args: string[]): number {
   fs.writeFileSync(path.join(dir, 'vite.config.ts'), VITE_CONFIG);
   fs.writeFileSync(path.join(dir, 'tsconfig.json'), PROJECT_TSCONFIG);
   fs.writeFileSync(path.join(dir, '.gitignore'), PROJECT_GITIGNORE);
+  fs.writeFileSync(path.join(dir, '.npmrc'), PROJECT_NPMRC);
   fs.writeFileSync(path.join(dir, 'Dockerfile'), DOCKERFILE);
   fs.writeFileSync(path.join(dir, '.dockerignore'), DOCKERIGNORE);
   fs.writeFileSync(path.join(dir, 'grhm-start.mjs'), START_SCRIPT);
